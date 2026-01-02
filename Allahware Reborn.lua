@@ -2,60 +2,220 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 -- Auto-execute check for teleports
+local autoExecuteFile = "allahware_autoexec.txt"
+local shouldAutoExecute = false
+
+if isfile and isfile(autoExecuteFile) then
+    shouldAutoExecute = true
+    if delfile then
+        delfile(autoExecuteFile)
+    end
+end
+
+-- Save script source for auto-execution
+local scriptSource = [[loadstring(game:HttpGet('YOUR_SCRIPT_URL_HERE'))()]]
+-- If you're running from a local file, update the scriptSource variable above with your loadstring
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+-- Initialize core services early
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- Cursor visibility setup
+local UserInputService = game:GetService("UserInputService")
+local Mouse = LocalPlayer:GetMouse()
+
+-- Show cursor when script GUI is active
+local function setupCursor()
+    Mouse.Icon = "rbxasset://textures/Cursor.png" -- Default cursor
+end
+
+task.spawn(setupCursor)
+
+-- Auto-execute notification
+if shouldAutoExecute then
+    task.wait(2)
+    Rayfield:Notify({
+        Title = "Auto-Execute",
+        Content = "Script auto-executed after teleport!",
+        Duration = 5,
+        Image = "check-circle",
+    })
+end
+
+local Window = Rayfield:CreateWindow({
+   Name = "AllahWare: Reborn",
+   LoadingTitle = "AllahWare: Reborn",
+   LoadingSubtitle = "by Nigga Hater",
+   ConfigurationSaving = {
+      Enabled = true,
+      FolderName = "AllahWareReborn",
+      FileName = "Config"
+   },
+   Discord = {
+      Enabled = false,
+      Invite = "noinvitelink",
+      RememberJoins = true
+   },
+   KeySystem = false,
+   Theme = "Ocean"
+})
+
+local placeIds = {
+    Tokyo = 14220581261,
+    EntDistrict = 17231846331,
+    Forest = 14220581641,
+    Plains = 14220581884,
+    SlayerVillage = 15240226383
+}
+
+local locationNames = {}
+for name, _ in pairs(placeIds) do
+    table.insert(locationNames, name)
+end
+
+local MainTab = Window:CreateTab("Teleports", "map-pin")
+local LoggerTab = Window:CreateTab("Anim Logger", "activity")
+local AutoparryTab = Window:CreateTab("Auto Parry", "shield")
+
+local selectedLocation = nil
+
+MainTab:CreateSection("World Teleports")
+
+MainTab:CreateParagraph({Title = "Auto-Execute Info", Content = "When you teleport, the script will automatically save a flag. When you rejoin/load into the new server, simply re-execute this script and it will detect the auto-execute flag!"})
+
+local TeleportDropdown = MainTab:CreateDropdown({
+   Name = "Select Location",
+   Options = locationNames,
+   CurrentOption = {"Select Location"},
+   MultipleOptions = false,
+   Flag = "TeleportDropdown",
+   Callback = function(Options)
+      selectedLocation = Options[1]
+   end,
+})
+
+MainTab:CreateButton({
+   Name = "Teleport",
+   Callback = function()
+      if selectedLocation and placeIds[selectedLocation] then
+         -- Set auto-execute flag before teleporting
+         if writefile then
+            writefile(autoExecuteFile, "true")
+         end
+         
+         Rayfield:Notify({
+            Title = "Teleporting",
+            Content = "Teleporting to " .. selectedLocation .. "... Script will auto-execute!",
+            Duration = 3,
+            Image = "map-pin",
+         })
+         
+         task.wait(1)
+         TeleportService:Teleport(placeIds[selectedLocation], LocalPlayer)
+      else
+         Rayfield:Notify({
+            Title = "Error",
+            Content = "Please select a valid location first!",
+            Duration = 5,
+            Image = "alert-circle",
+         })
+      end
+   end,
+})
+
+LoggerTab:CreateSection("Logger Controls")
+
+local loggingEnabled = false
+local loggedAnimations = {} -- Now stores: {id = {name, username, timestamp, count}}
+local loggedAnimationsArray = {} -- Array version for display
+local viewerGui = nil
+
+-- Forward declaration
+local updateAnimationViewer
+
+local function saveAnimationsToFile()
+    if not writefile then return end
     
-    task.spawn(function()
-        local success, err = pcall(function()
-            local HttpService = game:GetService("HttpService")
-
-            -- Fetch latest global data
-            local currentData = fetchGlobalAnimations() or {}
-
-            -- Merge our animation into the global data (schema: enabled, range, name, timing)
-            local existingAnim = currentData[animId]
-            if existingAnim then
-                existingAnim.enabled = animData.enabled ~= false
-                existingAnim.range = animData.range or existingAnim.range or 15
-                existingAnim.name = animData.name or existingAnim.name or "Unknown"
-                if isUpdate and existingAnim.timing then
-                    existingAnim.timing = (existingAnim.timing + animData.timing) / 2
-                else
-                    existingAnim.timing = animData.timing
-                end
-            else
-                currentData[animId] = {
-                    name = animData.name or "Unknown",
-                    timing = animData.timing,
-                    range = animData.range or 15,
-                    enabled = animData.enabled ~= false
-                }
+    local content = "========================================\n"
+    content = content .. "ANIMATION LOG - " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
+    content = content .. "========================================\n\n"
+    
+    if #loggedAnimationsArray == 0 then
+        content = content .. "No animations logged yet.\n"
+    else
+        local animsByUser = {}
+        for _, anim in ipairs(loggedAnimationsArray) do
+            if not animsByUser[anim.username] then
+                animsByUser[anim.username] = {}
             end
-
-            -- Upload merged data back to npoint.io (overwrite payload)
-            local jsonPayload = HttpService:JSONEncode(currentData)
-            local reqBody = {
-                Url = GLOBAL_ANIMS_URL,
-                Method = "PUT",
-                Headers = {
-                    ["Content-Type"] = "application/json"
-                },
-                Body = jsonPayload
-            }
-            local requestFuncs = {syn and syn.request, http_request, request}
-            for _, fn in ipairs(requestFuncs) do
-                if fn then
-                    fn(reqBody)
-                    return
-                end
-            end
-            -- Fallback to HttpPost
-            game:HttpPost(GLOBAL_ANIMS_URL, jsonPayload)
-        end)
-
-        if not success then
-            warn("[GLOBAL DB] Submit failed: " .. tostring(err))
+            table.insert(animsByUser[anim.username], anim)
         end
-    end)
+        
+        for username, anims in pairs(animsByUser) do
+            content = content .. "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            content = content .. "USER: " .. username .. " (" .. #anims .. " animations)\n"
+            content = content .. "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            for idx, anim in ipairs(anims) do
+                local timestamp = os.date("%H:%M:%S", anim.timestamp)
+                content = content .. string.format(
+                    "  [%d] Name: %s\n      ID: %s\n      Time: %s\n\n",
+                    idx,
+                    anim.name,
+                    anim.id,
+                    timestamp
+                )
+            end
+        end
+    end
+    
+    content = content .. "\n========================================\n"
+    content = content .. "Total Animations Logged: " .. #loggedAnimationsArray .. "\n"
+    content = content .. "========================================\n"
+    
+    writefile("animations_log.txt", content)
+end
 
+local function logAnimation(id, name, username)
+    local cleanId = tostring(id):gsub("rbxassetid://", "")
+    
+    if not loggedAnimations[cleanId] then
+        loggedAnimations[cleanId] = {
+            name = name,
+            username = username,
+            timestamp = os.time(),
+            count = 1
+        }
+        table.insert(loggedAnimationsArray, {
+            id = cleanId,
+            name = name,
+            username = username,
+            timestamp = os.time()
+        })
+        
+        print("--------------------------------")
+        print("Animation Logged:")
+        print("Name: " .. tostring(name))
+        print("ID: " .. cleanId)
+        print("Username: " .. tostring(username))
+        print("Full Path: " .. tostring(id))
+        
+        -- Save to file
+        saveAnimationsToFile()
+        
+        -- Update the viewer if it's open
+        updateAnimationViewer()
+        
+        -- Seliware clipboard support
+        if setclipboard then
+            setclipboard(cleanId)
+        end
+    else
+        loggedAnimations[cleanId].count = (loggedAnimations[cleanId].count or 1) + 1
+    end
+end
 
 local function setupLogger(character)
     local humanoid = character:WaitForChild("Humanoid")
