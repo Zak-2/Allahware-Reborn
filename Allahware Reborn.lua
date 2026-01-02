@@ -1087,63 +1087,140 @@ local parryAttempts = {} -- {animId = {timestamp, animData, playerName, distance
 local lastHealth = 100
 local pingCompensation = 0
 
--- Measured ping storage
-local measuredPing = 0.05 -- Default 50ms
+-- Measured round-trip ping storage (seconds)
+local measuredPing = 0.05 -- Default 50ms RTT
+local pingSamples = {}
+local MAX_PING_SAMPLES = 8
 
--- Function to measure actual round-trip ping by timing a remote call
+local function median(values)
+    if #values == 0 then return nil end
+    table.sort(values)
+    local mid = math.floor(#values / 2) + 1
+    return values[mid]
+end
+
+-- Function to measure actual round-trip ping from a simple, deterministic path
 local function measureActualPing()
-    local success, result = pcall(function()
-        -- Method 1: Try to find game's ping display (PlayerGui often has it)
+    local ok, result = pcall(function()
+        local stats = game:GetService("Stats")
+        local net = stats and stats.Network
+
+        -- 1) Direct Data Ping from ServerStatsItem / Network child / legacy Stats child
+        local function tryDataPing()
+            local item = net and net.ServerStatsItem and net.ServerStatsItem["Data Ping"]
+            if item then
+                if item.GetValue then return item:GetValue() / 1000 end
+                if item.Value then return item.Value / 1000 end
+                if item.GetAverage then return item:GetAverage() / 1000 end
+            end
+
+            local netChild = net and net:FindFirstChild("Data Ping")
+            if netChild then
+                if netChild.GetValue then return netChild:GetValue() / 1000 end
+                if netChild.Value then return netChild.Value / 1000 end
+            end
+
+            if stats then
+                local legacy = stats:FindFirstChild("Data Ping")
+                if legacy then
+                    if legacy.GetValue then return legacy:GetValue() / 1000 end
+                    if legacy.Value then return legacy.Value / 1000 end
+                end
+            end
+            return nil
+        end
+
+        local dataPing = tryDataPing()
+        if dataPing then
+            return dataPing
+        end
+
+        -- 2) PerformanceStats Ping
+        if stats then
+            local perfStats = stats:FindFirstChild("PerformanceStats")
+            if perfStats then
+                local pingItem = perfStats:FindFirstChild("Ping")
+                if pingItem and pingItem.GetValue then
+                    local val = pingItem:GetValue()
+                    if val and val > 0 then
+                        return val / 1000
+                    end
+                end
+            end
+        end
+
+        -- 3) Any ServerStatsItem numeric value as fallback
+        if net and net.ServerStatsItem then
+            for _, item in pairs(net.ServerStatsItem) do
+                if typeof(item) == "Instance" then
+                    local val = nil
+                    if item.GetValue then val = item:GetValue() end
+                    if not val and item.Value then val = item.Value end
+                    if not val and item.GetAverage then val = item:GetAverage() end
+                    if val and val > 0 then
+                        return val / 1000
+                    end
+                end
+            end
+        end
+
+        -- 4) In-game UI label scan
         local playerGui = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
         if playerGui then
             for _, gui in ipairs(playerGui:GetDescendants()) do
                 if gui:IsA("TextLabel") then
                     local text = gui.Text:lower()
-                    -- Look for ping display like "45ms" or "Ping: 45"
                     local pingMatch = text:match("(%d+)%s*ms")
                     if pingMatch then
                         local pingVal = tonumber(pingMatch)
-                        if pingVal and pingVal > 0 and pingVal < 1000 then
+                        if pingVal and pingVal > 0 and pingVal < 5000 then
                             return pingVal / 1000
                         end
                     end
                 end
             end
         end
-        
-        -- Method 2: Measure time between workspace property read
-        -- This gives us a rough server response time
+
+        -- 5) Last resort RTT timing
         local startTime = tick()
         local _ = game:GetService("Workspace"):GetServerTimeNow()
         local endTime = tick()
-        local roundTrip = endTime - startTime
-        
-        if roundTrip > 0.001 and roundTrip < 1 then
-            return roundTrip
-        end
-        
-        -- Method 3: Stats PerformanceStats if available
-        local stats = game:GetService("Stats")
-        local perfStats = stats:FindFirstChild("PerformanceStats")
-        if perfStats then
-            local pingItem = perfStats:FindFirstChild("Ping")
-            if pingItem and pingItem.GetValue then
-                local val = pingItem:GetValue()
-                if val and val > 0 then
-                    return val / 1000
-                end
-            end
-        end
-        
-        return nil
+        local roundTrip = math.max(endTime - startTime, 0.001)
+        return roundTrip
     end)
-    
-    return success and result or nil
+
+    if not ok then
+        return nil
+    end
+
+    -- Reject bad values to avoid freezing at defaults
+    if result and result > 0 and result < 5 then
+        return result
+    end
+
+    return nil
 end
 
--- Function to get ping compensation
+-- Quick, on-demand ping fetch straight from Data Ping (no smoothing)
+local function fetchImmediatePing()
+    local stats = game:GetService("Stats")
+    local net = stats and stats.Network
+    local item = net and net.ServerStatsItem and net.ServerStatsItem["Data Ping"]
+    if item then
+        local ok, val = pcall(function()
+            return item.GetValue and item:GetValue() or item.Value
+        end)
+        if ok and val and val > 0 then
+            return val / 1000
+        end
+    end
+    return nil
+end
+
+-- Function to get one-way ping compensation (half RTT, clamped)
 local function getPingCompensation()
-    return math.clamp(measuredPing, 0.01, 0.5)
+    local oneWay = measuredPing * 0.5
+    return math.clamp(oneWay, 0.005, 0.35)
 end
 
 -- Update ping measurement regularly (stops when script closes)
@@ -1151,8 +1228,17 @@ task.spawn(function()
     while scriptRunning and task.wait(1) do
         local newPing = measureActualPing()
         if newPing then
-            -- Smooth the ping value to avoid sudden jumps
-            measuredPing = measuredPing * 0.7 + newPing * 0.3
+            table.insert(pingSamples, newPing)
+            if #pingSamples > MAX_PING_SAMPLES then
+                table.remove(pingSamples, 1)
+            end
+
+            -- Use median of rolling samples to avoid spikes
+            local temp = {}
+            for i = 1, #pingSamples do
+                temp[i] = pingSamples[i]
+            end
+            measuredPing = median(temp)
         end
         pingCompensation = getPingCompensation()
     end
@@ -1710,8 +1796,15 @@ local function setupAutoparryForPlayer(player)
                 end
                 
                 if shouldParry then
-                    -- Apply ping compensation to timing (subtract ping for earlier parry)
-                    local compensatedTiming = math.max(0.01, timing - (pingCompensation * 0.5))
+                    -- Refresh ping right before timing for best accuracy
+                    local livePing = fetchImmediatePing()
+                    if livePing then
+                        measuredPing = livePing
+                        pingCompensation = getPingCompensation()
+                    end
+
+                    -- Apply ping compensation to timing (one-way latency)
+                    local compensatedTiming = math.max(0.01, timing - pingCompensation)
                     
                     -- Mark as queued
                     activeParryQueue[queueKey] = true
@@ -1724,7 +1817,8 @@ local function setupAutoparryForPlayer(player)
                     print("Player: " .. player.Name)
                     print("Distance: " .. math.floor(distance) .. " studs")
                     print("Base Timing: " .. string.format("%.3f", timing) .. "s")
-                    print("Ping: " .. string.format("%.0f", pingCompensation * 1000) .. "ms")
+                    print("Ping RTT: " .. string.format("%.0f", measuredPing * 1000) .. "ms")
+                    print("Ping Comp (one-way): " .. string.format("%.0f", pingCompensation * 1000) .. "ms")
                     print("Final Timing: " .. string.format("%.3f", compensatedTiming) .. "s")
                     print("========================================")
                     
