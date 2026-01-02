@@ -2,220 +2,60 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 -- Auto-execute check for teleports
-local autoExecuteFile = "allahware_autoexec.txt"
-local shouldAutoExecute = false
-
-if isfile and isfile(autoExecuteFile) then
-    shouldAutoExecute = true
-    if delfile then
-        delfile(autoExecuteFile)
-    end
-end
-
--- Save script source for auto-execution
-local scriptSource = [[loadstring(game:HttpGet('YOUR_SCRIPT_URL_HERE'))()]]
--- If you're running from a local file, update the scriptSource variable above with your loadstring
-
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
-
--- Initialize core services early
-local TeleportService = game:GetService("TeleportService")
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-
--- Cursor visibility setup
-local UserInputService = game:GetService("UserInputService")
-local Mouse = LocalPlayer:GetMouse()
-
--- Show cursor when script GUI is active
-local function setupCursor()
-    Mouse.Icon = "rbxasset://textures/Cursor.png" -- Default cursor
-end
-
-task.spawn(setupCursor)
-
--- Auto-execute notification
-if shouldAutoExecute then
-    task.wait(2)
-    Rayfield:Notify({
-        Title = "Auto-Execute",
-        Content = "Script auto-executed after teleport!",
-        Duration = 5,
-        Image = "check-circle",
-    })
-end
-
-local Window = Rayfield:CreateWindow({
-   Name = "AllahWare: Reborn",
-   LoadingTitle = "AllahWare: Reborn",
-   LoadingSubtitle = "by Nigga Hater",
-   ConfigurationSaving = {
-      Enabled = true,
-      FolderName = "AllahWareReborn",
-      FileName = "Config"
-   },
-   Discord = {
-      Enabled = false,
-      Invite = "noinvitelink",
-      RememberJoins = true
-   },
-   KeySystem = false,
-   Theme = "Ocean"
-})
-
-local placeIds = {
-    Tokyo = 14220581261,
-    EntDistrict = 17231846331,
-    Forest = 14220581641,
-    Plains = 14220581884,
-    SlayerVillage = 15240226383
-}
-
-local locationNames = {}
-for name, _ in pairs(placeIds) do
-    table.insert(locationNames, name)
-end
-
-local MainTab = Window:CreateTab("Teleports", "map-pin")
-local LoggerTab = Window:CreateTab("Anim Logger", "activity")
-local AutoparryTab = Window:CreateTab("Auto Parry", "shield")
-
-local selectedLocation = nil
-
-MainTab:CreateSection("World Teleports")
-
-MainTab:CreateParagraph({Title = "Auto-Execute Info", Content = "When you teleport, the script will automatically save a flag. When you rejoin/load into the new server, simply re-execute this script and it will detect the auto-execute flag!"})
-
-local TeleportDropdown = MainTab:CreateDropdown({
-   Name = "Select Location",
-   Options = locationNames,
-   CurrentOption = {"Select Location"},
-   MultipleOptions = false,
-   Flag = "TeleportDropdown",
-   Callback = function(Options)
-      selectedLocation = Options[1]
-   end,
-})
-
-MainTab:CreateButton({
-   Name = "Teleport",
-   Callback = function()
-      if selectedLocation and placeIds[selectedLocation] then
-         -- Set auto-execute flag before teleporting
-         if writefile then
-            writefile(autoExecuteFile, "true")
-         end
-         
-         Rayfield:Notify({
-            Title = "Teleporting",
-            Content = "Teleporting to " .. selectedLocation .. "... Script will auto-execute!",
-            Duration = 3,
-            Image = "map-pin",
-         })
-         
-         task.wait(1)
-         TeleportService:Teleport(placeIds[selectedLocation], LocalPlayer)
-      else
-         Rayfield:Notify({
-            Title = "Error",
-            Content = "Please select a valid location first!",
-            Duration = 5,
-            Image = "alert-circle",
-         })
-      end
-   end,
-})
-
-LoggerTab:CreateSection("Logger Controls")
-
-local loggingEnabled = false
-local loggedAnimations = {} -- Now stores: {id = {name, username, timestamp, count}}
-local loggedAnimationsArray = {} -- Array version for display
-local viewerGui = nil
-
--- Forward declaration
-local updateAnimationViewer
-
-local function saveAnimationsToFile()
-    if not writefile then return end
     
-    local content = "========================================\n"
-    content = content .. "ANIMATION LOG - " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-    content = content .. "========================================\n\n"
-    
-    if #loggedAnimationsArray == 0 then
-        content = content .. "No animations logged yet.\n"
-    else
-        local animsByUser = {}
-        for _, anim in ipairs(loggedAnimationsArray) do
-            if not animsByUser[anim.username] then
-                animsByUser[anim.username] = {}
+    task.spawn(function()
+        local success, err = pcall(function()
+            local HttpService = game:GetService("HttpService")
+
+            -- Fetch latest global data
+            local currentData = fetchGlobalAnimations() or {}
+
+            -- Merge our animation into the global data (schema: enabled, range, name, timing)
+            local existingAnim = currentData[animId]
+            if existingAnim then
+                existingAnim.enabled = animData.enabled ~= false
+                existingAnim.range = animData.range or existingAnim.range or 15
+                existingAnim.name = animData.name or existingAnim.name or "Unknown"
+                if isUpdate and existingAnim.timing then
+                    existingAnim.timing = (existingAnim.timing + animData.timing) / 2
+                else
+                    existingAnim.timing = animData.timing
+                end
+            else
+                currentData[animId] = {
+                    name = animData.name or "Unknown",
+                    timing = animData.timing,
+                    range = animData.range or 15,
+                    enabled = animData.enabled ~= false
+                }
             end
-            table.insert(animsByUser[anim.username], anim)
-        end
-        
-        for username, anims in pairs(animsByUser) do
-            content = content .. "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            content = content .. "USER: " .. username .. " (" .. #anims .. " animations)\n"
-            content = content .. "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            for idx, anim in ipairs(anims) do
-                local timestamp = os.date("%H:%M:%S", anim.timestamp)
-                content = content .. string.format(
-                    "  [%d] Name: %s\n      ID: %s\n      Time: %s\n\n",
-                    idx,
-                    anim.name,
-                    anim.id,
-                    timestamp
-                )
-            end
-        end
-    end
-    
-    content = content .. "\n========================================\n"
-    content = content .. "Total Animations Logged: " .. #loggedAnimationsArray .. "\n"
-    content = content .. "========================================\n"
-    
-    writefile("animations_log.txt", content)
-end
 
-local function logAnimation(id, name, username)
-    local cleanId = tostring(id):gsub("rbxassetid://", "")
-    
-    if not loggedAnimations[cleanId] then
-        loggedAnimations[cleanId] = {
-            name = name,
-            username = username,
-            timestamp = os.time(),
-            count = 1
-        }
-        table.insert(loggedAnimationsArray, {
-            id = cleanId,
-            name = name,
-            username = username,
-            timestamp = os.time()
-        })
-        
-        print("--------------------------------")
-        print("Animation Logged:")
-        print("Name: " .. tostring(name))
-        print("ID: " .. cleanId)
-        print("Username: " .. tostring(username))
-        print("Full Path: " .. tostring(id))
-        
-        -- Save to file
-        saveAnimationsToFile()
-        
-        -- Update the viewer if it's open
-        updateAnimationViewer()
-        
-        -- Seliware clipboard support
-        if setclipboard then
-            setclipboard(cleanId)
+            -- Upload merged data back to npoint.io (overwrite payload)
+            local jsonPayload = HttpService:JSONEncode(currentData)
+            local reqBody = {
+                Url = GLOBAL_ANIMS_URL,
+                Method = "PUT",
+                Headers = {
+                    ["Content-Type"] = "application/json"
+                },
+                Body = jsonPayload
+            }
+            local requestFuncs = {syn and syn.request, http_request, request}
+            for _, fn in ipairs(requestFuncs) do
+                if fn then
+                    fn(reqBody)
+                    return
+                end
+            end
+            -- Fallback to HttpPost
+            game:HttpPost(GLOBAL_ANIMS_URL, jsonPayload)
+        end)
+
+        if not success then
+            warn("[GLOBAL DB] Submit failed: " .. tostring(err))
         end
-    else
-        loggedAnimations[cleanId].count = (loggedAnimations[cleanId].count or 1) + 1
-    end
-end
+    end)
+
 
 local function setupLogger(character)
     local humanoid = character:WaitForChild("Humanoid")
@@ -874,26 +714,44 @@ local GLOBAL_ANIMS_URL = "https://api.npoint.io/648f4993a0a4db7ba15a"
 local autoSubmitEnabled = true
 local lastGlobalSync = 0
 
--- Fetch global animations from npoint.io
+-- Fetch global animations from npoint.io (supports executor request fallbacks)
 local function fetchGlobalAnimations()
-    local success, result = pcall(function()
-        local response = game:HttpGet(GLOBAL_ANIMS_URL)
-        if response and response ~= "" then
-            local decoded = game:GetService("HttpService"):JSONDecode(response)
+    local function decode(jsonText)
+        if not jsonText or jsonText == "" then return nil end
+        local ok, decoded = pcall(function()
+            return game:GetService("HttpService"):JSONDecode(jsonText)
+        end)
+        if ok and decoded and type(decoded) == "table" then
             return decoded
         end
         return nil
-    end)
-    
-    if success and result then
-        return result
-    else
-        warn("[GLOBAL DB] Failed to fetch: " .. tostring(result))
-        return nil
     end
+
+    -- Try native HttpGet
+    local ok, result = pcall(function()
+        return game:HttpGet(GLOBAL_ANIMS_URL)
+    end)
+    if ok then
+        local decoded = decode(result)
+        if decoded then return decoded end
+    end
+
+    -- Executor request fallbacks
+    local requestFuncs = {syn and syn.request, http_request, request}
+    for _, fn in ipairs(requestFuncs) do
+        if fn then
+            local resp = fn({Url = GLOBAL_ANIMS_URL, Method = "GET"})
+            local body = resp and (resp.Body or resp.body)
+            local decoded = decode(body)
+            if decoded then return decoded end
+        end
+    end
+
+    warn("[GLOBAL DB] Failed to fetch global animations")
+    return nil
 end
 
--- Merge global animations with local (global takes priority for timing if newer)
+-- Merge global animations with local using provided schema
 local function mergeGlobalAnimations(globalAnims)
     if not globalAnims then return 0 end
     
@@ -901,21 +759,24 @@ local function mergeGlobalAnimations(globalAnims)
     local updated = 0
     
     for animId, data in pairs(globalAnims) do
+        local incoming = {
+            name = data.name or "Unknown",
+            timing = data.timing or 0.15,
+            enabled = data.enabled ~= false,
+            range = data.range or 15,
+            source = "global"
+        }
         if not autoparryAnimations[animId] then
-            -- New animation from global
-            autoparryAnimations[animId] = {
-                name = data.name or "Unknown",
-                timing = data.timing or 0.15,
-                enabled = true,
-                range = data.range or 15,
-                source = "global"
-            }
+            autoparryAnimations[animId] = incoming
             added = added + 1
-        elseif data.votes and data.votes > 5 then
-            -- Update timing if global has many votes (community verified)
+        else
+            -- Update timing/name/range/enabled for non-manual entries
             local localAnim = autoparryAnimations[animId]
             if localAnim.source ~= "manual" then
-                localAnim.timing = data.timing
+                localAnim.name = incoming.name
+                localAnim.timing = incoming.timing
+                localAnim.range = incoming.range
+                localAnim.enabled = incoming.enabled
                 localAnim.source = "global"
                 updated = updated + 1
             end
@@ -936,107 +797,58 @@ local function submitLearnedAnimation(animId, animData, isUpdate)
     task.spawn(function()
         local success, err = pcall(function()
             local HttpService = game:GetService("HttpService")
-            
-            -- First, fetch current global data
-            local currentData = {}
-            local fetchSuccess, fetchResult = pcall(function()
-                local response = game:HttpGet(GLOBAL_ANIMS_URL)
-                if response and response ~= "" then
-                    return HttpService:JSONDecode(response)
-                end
-                return {}
-            end)
-            
-            if fetchSuccess and fetchResult then
-                currentData = fetchResult
-            end
-            
-            -- Merge our new animation into the global data
+
+            -- Fetch latest global data
+            local currentData = fetchGlobalAnimations() or {}
+
+            -- Merge our animation into the global data (schema: enabled, range, name, timing)
             local existingAnim = currentData[animId]
             if existingAnim then
-                -- Update votes if it exists
-                existingAnim.votes = (existingAnim.votes or 0) + 1
-                -- Average the timing with community data
-                if isUpdate then
+                existingAnim.enabled = animData.enabled ~= false
+                existingAnim.range = animData.range or existingAnim.range or 15
+                existingAnim.name = animData.name or existingAnim.name or "Unknown"
+                if isUpdate and existingAnim.timing then
                     existingAnim.timing = (existingAnim.timing + animData.timing) / 2
+                else
+                    existingAnim.timing = animData.timing
                 end
             else
-                -- Add new animation
                 currentData[animId] = {
                     name = animData.name or "Unknown",
                     timing = animData.timing,
                     range = animData.range or 15,
-                    votes = 1
+                    enabled = animData.enabled ~= false
                 }
             end
-            
-            -- Upload merged data back to npoint.io
+
+            -- Upload merged data back to npoint.io (overwrite payload)
             local jsonPayload = HttpService:JSONEncode(currentData)
-            
-            -- Try different request methods based on executor
-            if syn and syn.request then
-                syn.request({
-                    Url = GLOBAL_ANIMS_URL,
-                    Method = "POST",
-                    Headers = {["Content-Type"] = "application/json"},
-                    Body = jsonPayload
-                })
-            elseif http_request then
-                http_request({
-                    Url = GLOBAL_ANIMS_URL,
-                    Method = "POST",
-                    Headers = {["Content-Type"] = "application/json"},
-                    Body = jsonPayload
-                })
-            elseif request then
-                request({
-                    Url = GLOBAL_ANIMS_URL,
-                    Method = "POST",
-                    Headers = {["Content-Type"] = "application/json"},
-                    Body = jsonPayload
-                })
+            local reqBody = {
+                Url = GLOBAL_ANIMS_URL,
+                Method = "PUT",
+                Headers = {
+                    ["Content-Type"] = "application/json"
+                },
+                Body = jsonPayload
+            }
+            local requestFuncs = {syn and syn.request, http_request, request}
+            for _, fn in ipairs(requestFuncs) do
+                if fn then
+                    fn(reqBody)
+                    return
+                end
             end
+            -- Fallback to HttpPost
+            game:HttpPost(GLOBAL_ANIMS_URL, jsonPayload)
         end)
-        
-        if success then
-            print("[GLOBAL DB] Synced animation: " .. animId)
-        else
+
+        if not success then
             warn("[GLOBAL DB] Submit failed: " .. tostring(err))
         end
     end)
 end
 
--- Note: To contribute animations to the global database, share your JSON file
--- with the Pastebin maintainer or use the export feature
-
--- Clear stale data on character death/respawn
-local function clearLearningData()
-    recentEnemyAnimations = {}
-    recentAnimationsByPlayer = {}
-end
-
--- Save autoparry animations to file
-local function saveAutoparryToFile()
-    if not writefile then return end
-    
-    local content = "========================================\n"
-    content = content .. "AUTOPARRY ANIMATIONS LIST\n"
-    content = content .. "========================================\n\n"
-    
-    for id, data in pairs(autoparryAnimations) do
-        content = content .. string.format(
-            "Name: %s\nID: %s\nTiming: %.2fs\nEnabled: %s\n\n",
-            data.name,
-            id,
-            data.timing,
-            tostring(data.enabled)
-        )
-    end
-    
-    writefile("autoparry_animations.txt", content)
-end
-
--- Load autoparry animations from file
+-- Load autoparry animations from disk
 local function loadAutoparryFromFile()
     if not isfile or not isfile("autoparry_animations_data.txt") then 
         return 
@@ -1045,7 +857,6 @@ local function loadAutoparryFromFile()
     local content = readfile("autoparry_animations_data.txt")
     if not content then return end
     
-    -- Parse JSON or simple format
     local success, result = pcall(function()
         return game:GetService("HttpService"):JSONDecode(content)
     end)
@@ -1053,7 +864,6 @@ local function loadAutoparryFromFile()
     if success and result then
         autoparryAnimations = result
         
-        -- Count animations properly
         local count = 0
         for _ in pairs(autoparryAnimations) do
             count = count + 1
