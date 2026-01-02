@@ -39,497 +39,107 @@ if shouldAutoExecute then
     task.wait(2)
     Rayfield:Notify({
         Title = "Auto-Execute",
-        Content = "Script auto-executed after teleport!",
-        Duration = 5,
-        Image = "check-circle",
-    })
-end
+        AutoparryTab:CreateSection("Blacklist (local only)")
 
-local Window = Rayfield:CreateWindow({
-   Name = "AllahWare: Reborn",
-   LoadingTitle = "AllahWare: Reborn",
-   LoadingSubtitle = "by Nigga Hater",
-   ConfigurationSaving = {
-      Enabled = true,
-      FolderName = "AllahWareReborn",
-      FileName = "Config"
-   },
-   Discord = {
-      Enabled = false,
-      Invite = "noinvitelink",
-      RememberJoins = true
-   },
-   KeySystem = false,
-   Theme = "Ocean"
-})
+        local lastBlacklistInput = ""
 
-local placeIds = {
-    Tokyo = 14220581261,
-    EntDistrict = 17231846331,
-    Forest = 14220581641,
-    Plains = 14220581884,
-    SlayerVillage = 15240226383
-}
+        AutoparryTab:CreateInput({
+           Name = "Add Animation ID to Blacklist",
+           PlaceholderText = "Enter animation ID (enter to save)",
+           RemoveTextAfterFocusLost = true,
+           Callback = function(Text)
+              lastBlacklistInput = Text or ""
+              local ok, idOrErr = addToBlacklist(lastBlacklistInput)
+              if ok then
+                  if autoparryAnimations[idOrErr] then
+                      autoparryAnimations[idOrErr] = nil
+                      saveAutoparryAsJSON()
+                  end
+                  Rayfield:Notify({
+                      Title = "Blacklisted",
+                      Content = "Blocked animation ID " .. idOrErr,
+                      Duration = 3,
+                      Image = "slash",
+                  })
+              else
+                  Rayfield:Notify({
+                      Title = "Blacklist Error",
+                      Content = idOrErr,
+                      Duration = 3,
+                      Image = "alert-circle",
+                AutoparryTab:CreateSection("Blacklist (local only)")
 
-local locationNames = {}
-for name, _ in pairs(placeIds) do
-    table.insert(locationNames, name)
-end
+                local lastBlacklistInput = ""
 
-local MainTab = Window:CreateTab("Teleports", "map-pin")
-local LoggerTab = Window:CreateTab("Anim Logger", "activity")
-local AutoparryTab = Window:CreateTab("Auto Parry", "shield")
+                AutoparryTab:CreateInput({
+                   Name = "Add Animation ID to Blacklist",
+                   PlaceholderText = "Enter animation ID (enter to save)",
+                   RemoveTextAfterFocusLost = true,
+                   Callback = function(Text)
+                      lastBlacklistInput = Text or ""
+                      local ok, idOrErr = addToBlacklist(lastBlacklistInput)
+                      if ok then
+                          if autoparryAnimations[idOrErr] then
+                              autoparryAnimations[idOrErr] = nil
+                              saveAutoparryAsJSON()
+                          end
+                          Rayfield:Notify({
+                              Title = "Blacklisted",
+                              Content = "Blocked animation ID " .. idOrErr,
+                              Duration = 3,
+                              Image = "slash",
+                          })
+                      else
+                          Rayfield:Notify({
+                              Title = "Blacklist Error",
+                              Content = idOrErr,
+                              Duration = 3,
+                              Image = "alert-circle",
+                          })
+                      end
+                   end,
+                })
 
-local selectedLocation = nil
+                AutoparryTab:CreateButton({
+                   Name = "View Blacklist",
+                   Callback = function()
+                      if next(autoparryBlacklist) == nil then
+                          Rayfield:Notify({
+                              Title = "Blacklist Empty",
+                              Content = "No animations are currently blocked",
+                              Duration = 2,
+                              Image = "info",
+                          })
+                          return
+                      end
+                      print("\n===== AUTOPARRY BLACKLIST =====")
+                      for id, _ in pairs(autoparryBlacklist) do
+                          print(id)
+                      end
+                      print("================================\n")
+                      Rayfield:Notify({
+                          Title = "Blacklist Printed",
+                          Content = "Check console (F9) for IDs",
+                          Duration = 2,
+                          Image = "list",
+                      })
+                   end,
+                })
 
-MainTab:CreateSection("World Teleports")
-
-MainTab:CreateParagraph({Title = "Auto-Execute Info", Content = "When you teleport, the script will automatically save a flag. When you rejoin/load into the new server, simply re-execute this script and it will detect the auto-execute flag!"})
-
-local TeleportDropdown = MainTab:CreateDropdown({
-   Name = "Select Location",
-   Options = locationNames,
-   CurrentOption = {"Select Location"},
-   MultipleOptions = false,
-   Flag = "TeleportDropdown",
-   Callback = function(Options)
-      selectedLocation = Options[1]
-   end,
-})
-
-MainTab:CreateButton({
-   Name = "Teleport",
-   Callback = function()
-      if selectedLocation and placeIds[selectedLocation] then
-         -- Set auto-execute flag before teleporting
-         if writefile then
-            writefile(autoExecuteFile, "true")
-         end
-         
-         Rayfield:Notify({
-            Title = "Teleporting",
-            Content = "Teleporting to " .. selectedLocation .. "... Script will auto-execute!",
-            Duration = 3,
-            Image = "map-pin",
-         })
-         
-         task.wait(1)
-         TeleportService:Teleport(placeIds[selectedLocation], LocalPlayer)
-      else
-         Rayfield:Notify({
-            Title = "Error",
-            Content = "Please select a valid location first!",
-            Duration = 5,
-            Image = "alert-circle",
-         })
-      end
-   end,
-})
-
-LoggerTab:CreateSection("Logger Controls")
-
-local loggingEnabled = false
-local loggedAnimations = {} -- Now stores: {id = {name, username, timestamp, count}}
-local loggedAnimationsArray = {} -- Array version for display
-local viewerGui = nil
-
--- Forward declaration
-local updateAnimationViewer
-
-local function saveAnimationsToFile()
-    if not writefile then return end
-    
-    local content = "========================================\n"
-    content = content .. "ANIMATION LOG - " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-    content = content .. "========================================\n\n"
-    
-    if #loggedAnimationsArray == 0 then
-        content = content .. "No animations logged yet.\n"
-    else
-        local animsByUser = {}
-        for _, anim in ipairs(loggedAnimationsArray) do
-            if not animsByUser[anim.username] then
-                animsByUser[anim.username] = {}
-            end
-            table.insert(animsByUser[anim.username], anim)
-        end
-        
-        for username, anims in pairs(animsByUser) do
-            content = content .. "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            content = content .. "USER: " .. username .. " (" .. #anims .. " animations)\n"
-            content = content .. "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            for idx, anim in ipairs(anims) do
-                local timestamp = os.date("%H:%M:%S", anim.timestamp)
-                content = content .. string.format(
-                    "  [%d] Name: %s\n      ID: %s\n      Time: %s\n\n",
-                    idx,
-                    anim.name,
-                    anim.id,
-                    timestamp
-                )
-            end
-        end
-    end
-    
-    content = content .. "\n========================================\n"
-    content = content .. "Total Animations Logged: " .. #loggedAnimationsArray .. "\n"
-    content = content .. "========================================\n"
-    
-    writefile("animations_log.txt", content)
-end
-
-local function logAnimation(id, name, username)
-    local cleanId = tostring(id):gsub("rbxassetid://", "")
-    
-    if not loggedAnimations[cleanId] then
-        loggedAnimations[cleanId] = {
-            name = name,
-            username = username,
-            timestamp = os.time(),
-            count = 1
-        }
-        table.insert(loggedAnimationsArray, {
-            id = cleanId,
-            name = name,
-            username = username,
-            timestamp = os.time()
-        })
-        
-        print("--------------------------------")
-        print("Animation Logged:")
-        print("Name: " .. tostring(name))
-        print("ID: " .. cleanId)
-        print("Username: " .. tostring(username))
-        print("Full Path: " .. tostring(id))
-        
-        -- Save to file
-        saveAnimationsToFile()
-        
-        -- Update the viewer if it's open
-        updateAnimationViewer()
-        
-        -- Seliware clipboard support
-        if setclipboard then
-            setclipboard(cleanId)
-        end
-    else
-        loggedAnimations[cleanId].count = (loggedAnimations[cleanId].count or 1) + 1
-    end
-end
-
-local function setupLogger(character)
-    local humanoid = character:WaitForChild("Humanoid")
-    local player = Players:GetPlayerFromCharacter(character)
-    if not player then return end
-    
-    humanoid.AnimationPlayed:Connect(function(animationTrack)
-        if loggingEnabled then
-            -- Check distance (only log if within 50 studs)
-            local localChar = LocalPlayer.Character
-            if not localChar then return end
-            
-            local localRoot = localChar:FindFirstChild("HumanoidRootPart")
-            local targetRoot = character:FindFirstChild("HumanoidRootPart")
-            
-            if localRoot and targetRoot then
-                local distance = (localRoot.Position - targetRoot.Position).Magnitude
-                
-                if distance <= 50 then
-                    local anim = animationTrack.Animation
-                    logAnimation(anim.AnimationId, anim.Name, player.Name)
-                end
-            end
-        end
-    end)
-end
-
--- Setup logger for all existing players
-for _, player in pairs(Players:GetPlayers()) do
-    if player.Character then
-        setupLogger(player.Character)
-    end
-    player.CharacterAdded:Connect(setupLogger)
-end
-
--- Setup logger for new players
-Players.PlayerAdded:Connect(function(player)
-    player.CharacterAdded:Connect(setupLogger)
-    if player.Character then
-        setupLogger(player.Character)
-    end
-end)
-
-updateAnimationViewer = function()
-    if not viewerGui then return end
-    
-    local mainFrame = viewerGui:FindFirstChild("MainFrame")
-    if not mainFrame then return end
-    
-    local scrollFrame = mainFrame:FindFirstChild("ScrollFrame")
-    if not scrollFrame then return end
-    
-    local scrollContent = scrollFrame:FindFirstChild("ScrollContent")
-    if not scrollContent then return end
-    
-    -- Update stats label
-    local statsLabel = mainFrame:FindFirstChild("StatsLabel")
-    if statsLabel then
-        statsLabel.Text = "Total Animations: " .. #loggedAnimationsArray
-    end
-    
-    -- Clear existing content
-    for _, child in ipairs(scrollContent:GetChildren()) do
-        if child:IsA("UIListLayout") then continue end
-        child:Destroy()
-    end
-    
-    if #loggedAnimationsArray == 0 then
-        local emptyLabel = Instance.new("TextLabel")
-        emptyLabel.BackgroundTransparency = 1
-        emptyLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
-        emptyLabel.TextSize = 14
-        emptyLabel.Font = Enum.Font.GothamMedium
-        emptyLabel.Text = "No animations logged yet.\nEnable logger and perform actions."
-        emptyLabel.TextWrapped = true
-        emptyLabel.Size = UDim2.new(1, -20, 0, 100)
-        emptyLabel.Parent = scrollContent
-    else
-        for index, anim in ipairs(loggedAnimationsArray) do
-            local timestamp = os.date("%H:%M:%S", anim.timestamp)
-            
-            -- Animation container card
-            local animCard = Instance.new("Frame")
-            animCard.Name = "AnimCard"
-            animCard.BackgroundColor3 = Color3.fromRGB(25, 30, 40)
-            animCard.BorderSizePixel = 0
-            animCard.Size = UDim2.new(1, -20, 0, 110)
-            animCard.Parent = scrollContent
-            
-            -- Add rounded corners
-            local corner = Instance.new("UICorner")
-            corner.CornerRadius = UDim.new(0, 8)
-            corner.Parent = animCard
-            
-            -- Index badge
-            local indexBadge = Instance.new("TextLabel")
-            indexBadge.BackgroundColor3 = Color3.fromRGB(50, 120, 200)
-            indexBadge.TextColor3 = Color3.fromRGB(255, 255, 255)
-            indexBadge.TextSize = 12
-            indexBadge.Font = Enum.Font.GothamBold
-            indexBadge.Text = "#" .. index
-            indexBadge.Size = UDim2.new(0, 40, 0, 20)
-            indexBadge.Position = UDim2.new(0, 8, 0, 8)
-            indexBadge.Parent = animCard
-            
-            local badgeCorner = Instance.new("UICorner")
-            badgeCorner.CornerRadius = UDim.new(0, 4)
-            badgeCorner.Parent = indexBadge
-            
-            -- Animation name
-            local nameLabel = Instance.new("TextLabel")
-            nameLabel.BackgroundTransparency = 1
-            nameLabel.TextColor3 = Color3.fromRGB(200, 255, 200)
-            nameLabel.TextSize = 13
-            nameLabel.Font = Enum.Font.GothamBold
-            nameLabel.Text = anim.name
-            nameLabel.TextWrapped = true
-            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-            nameLabel.Size = UDim2.new(1, -60, 0, 20)
-            nameLabel.Position = UDim2.new(0, 55, 0, 8)
-            nameLabel.Parent = animCard
-            
-            -- User label
-            local userLabel = Instance.new("TextLabel")
-            userLabel.BackgroundTransparency = 1
-            userLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
-            userLabel.TextSize = 11
-            userLabel.Font = Enum.Font.Gotham
-            userLabel.Text = "👤 " .. anim.username
-            userLabel.TextXAlignment = Enum.TextXAlignment.Left
-            userLabel.Size = UDim2.new(1, -16, 0, 18)
-            userLabel.Position = UDim2.new(0, 8, 0, 32)
-            userLabel.Parent = animCard
-            
-            -- ID label
-            local idLabel = Instance.new("TextLabel")
-            idLabel.BackgroundTransparency = 1
-            idLabel.TextColor3 = Color3.fromRGB(150, 180, 255)
-            idLabel.TextSize = 11
-            idLabel.Font = Enum.Font.GothamMedium
-            idLabel.Text = "🆔 " .. anim.id
-            idLabel.TextXAlignment = Enum.TextXAlignment.Left
-            idLabel.Size = UDim2.new(1, -16, 0, 18)
-            idLabel.Position = UDim2.new(0, 8, 0, 52)
-            idLabel.Parent = animCard
-            
-            -- Time label
-            local timeLabel = Instance.new("TextLabel")
-            timeLabel.BackgroundTransparency = 1
-            timeLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
-            timeLabel.TextSize = 10
-            timeLabel.Font = Enum.Font.Gotham
-            timeLabel.Text = "🕐 " .. timestamp
-            timeLabel.TextXAlignment = Enum.TextXAlignment.Left
-            timeLabel.Size = UDim2.new(0.5, -16, 0, 18)
-            timeLabel.Position = UDim2.new(0, 8, 0, 72)
-            timeLabel.Parent = animCard
-            
-            -- Copy button
-            local idCopy = anim.id
-            local copyBtn = Instance.new("TextButton")
-            copyBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 180)
-            copyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            copyBtn.TextSize = 11
-            copyBtn.Font = Enum.Font.GothamBold
-            copyBtn.Text = "📋 Copy ID"
-            copyBtn.Size = UDim2.new(0.45, -8, 0, 26)
-            copyBtn.Position = UDim2.new(0.55, 0, 1, -34)
-            copyBtn.BorderSizePixel = 0
-            copyBtn.Parent = animCard
-            
-            local btnCorner = Instance.new("UICorner")
-            btnCorner.CornerRadius = UDim.new(0, 6)
-            btnCorner.Parent = copyBtn
-            
-            copyBtn.MouseButton1Click:Connect(function()
-                if setclipboard then
-                    setclipboard(idCopy)
-                    copyBtn.Text = "✓ Copied!"
-                    copyBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 100)
-                    task.wait(1)
-                    copyBtn.Text = "📋 Copy ID"
-                    copyBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 180)
-                end
-            end)
-        end
-    end
-end
-
-local function createAnimationViewer()
-    if viewerGui then
-        viewerGui:Destroy()
-    end
-    
-    local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "AnimationViewerGui"
-    ScreenGui.ResetOnSpawn = false
-    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-    
-    viewerGui = ScreenGui
-    
-    -- Main window frame
-    local MainFrame = Instance.new("Frame")
-    MainFrame.Name = "MainFrame"
-    MainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
-    MainFrame.BorderSizePixel = 0
-    MainFrame.Size = UDim2.new(0, 650, 0, 750)
-    MainFrame.Position = UDim2.new(0.5, -325, 0.5, -375)
-    MainFrame.Parent = ScreenGui
-    
-    -- Add shadow/border effect
-    local mainCorner = Instance.new("UICorner")
-    mainCorner.CornerRadius = UDim.new(0, 12)
-    mainCorner.Parent = MainFrame
-    
-    local borderGradient = Instance.new("UIStroke")
-    borderGradient.Color = Color3.fromRGB(80, 140, 220)
-    borderGradient.Thickness = 2
-    borderGradient.Parent = MainFrame
-    
-    -- Make frame draggable
-    local dragging, dragInput, dragStart, startPos
-    local UserInputService = game:GetService("UserInputService")
-    
-    MainFrame.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            dragStart = input.Position
-            startPos = MainFrame.Position
-            
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-    
-    MainFrame.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement then
-            dragInput = input
-        end
-    end)
-    
-    UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
-            local delta = input.Position - dragStart
-            MainFrame.Position = UDim2.new(
-                startPos.X.Scale,
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale,
-                startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-    
-    -- Make frame resizable
-    local ResizeHandle = Instance.new("TextButton")
-    ResizeHandle.Name = "ResizeHandle"
-    ResizeHandle.BackgroundColor3 = Color3.fromRGB(80, 140, 220)
-    ResizeHandle.BorderSizePixel = 0
-    ResizeHandle.Size = UDim2.new(0, 20, 0, 20)
-    ResizeHandle.Position = UDim2.new(1, -20, 1, -20)
-    ResizeHandle.Text = "⬀"
-    ResizeHandle.TextSize = 16
-    ResizeHandle.TextColor3 = Color3.fromRGB(255, 255, 255)
-    ResizeHandle.Font = Enum.Font.GothamBold
-    ResizeHandle.ZIndex = 10
-    ResizeHandle.Parent = MainFrame
-    
-    local resizeCorner = Instance.new("UICorner")
-    resizeCorner.CornerRadius = UDim.new(0, 6)
-    resizeCorner.Parent = ResizeHandle
-    
-    local resizing = false
-    local resizeStart, sizeStart
-    
-    ResizeHandle.MouseButton1Down:Connect(function()
-        resizing = true
-        resizeStart = UserInputService:GetMouseLocation()
-        sizeStart = MainFrame.Size
-    end)
-    
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            resizing = false
-        end
-    end)
-    
-    UserInputService.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement and resizing then
-            local mousePos = UserInputService:GetMouseLocation()
-            local delta = mousePos - resizeStart
-            
-            local newWidth = math.max(400, sizeStart.X.Offset + delta.X)
-            local newHeight = math.max(300, sizeStart.Y.Offset + delta.Y)
-            
-            MainFrame.Size = UDim2.new(0, newWidth, 0, newHeight)
-        end
-    end)
-    
-    -- Title bar
-    local TitleBar = Instance.new("Frame")
-    TitleBar.Name = "TitleBar"
-    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 60, 120)
-    TitleBar.BorderSizePixel = 0
-    TitleBar.Size = UDim2.new(1, 0, 0, 50)
-    TitleBar.Parent = MainFrame
-    
-    local titleCorner = Instance.new("UICorner")
-    titleCorner.CornerRadius = UDim.new(0, 12)
-    titleCorner.Parent = TitleBar
-    
+                AutoparryTab:CreateButton({
+                   Name = "Clear Blacklist",
+                   Callback = function()
+                      autoparryBlacklist = {}
+                      saveBlacklist()
+                      pruneBlacklistedAutoparry()
+                      Rayfield:Notify({
+                          Title = "Blacklist Cleared",
+                          Content = "All blocked IDs removed",
+                          Duration = 2,
+                          Image = "trash-2",
+                      })
+                   end,
+                })
     -- Cover bottom corners
     local titleCover = Instance.new("Frame")
     titleCover.BackgroundColor3 = Color3.fromRGB(30, 60, 120)
@@ -873,15 +483,20 @@ local scriptRunning = true -- Flag to stop background loops on cleanup
 local GLOBAL_ANIMS_URL = "https://api.npoint.io/648f4993a0a4db7ba15a"
 local autoSubmitEnabled = true
 local lastGlobalSync = 0
+local HttpService = game:GetService("HttpService")
 
 -- Forward declarations for persistence helpers
 local saveAutoparryAsJSON
 local loadAutoparryFromFile
+local saveBlacklist
+local loadBlacklist
+local autoparryBlacklist = {}
+local AUTOPARRY_BLACKLIST_FILE = "autoparry_blacklist.txt"
 
 -- Save as JSON for better compatibility
 function saveAutoparryAsJSON()
-    if not writefile or not game:GetService("HttpService") then return end
-    local json = game:GetService("HttpService"):JSONEncode(autoparryAnimations)
+    if not writefile or not HttpService then return end
+    local json = HttpService:JSONEncode(autoparryAnimations)
     writefile("autoparry_animations_data.txt", json)
 end
 
@@ -893,7 +508,7 @@ function loadAutoparryFromFile()
     local content = readfile("autoparry_animations_data.txt")
     if not content then return end
     local success, result = pcall(function()
-        return game:GetService("HttpService"):JSONDecode(content)
+        return HttpService:JSONDecode(content)
     end)
     if success and result then
         autoparryAnimations = result
@@ -909,6 +524,51 @@ function loadAutoparryFromFile()
                 Image = "check-circle",
             })
         end
+    end
+end
+
+-- Blacklist helpers (local only)
+function saveBlacklist()
+    if not writefile or not HttpService then return end
+    writefile(AUTOPARRY_BLACKLIST_FILE, HttpService:JSONEncode(autoparryBlacklist))
+end
+
+function loadBlacklist()
+    if not isfile or not isfile(AUTOPARRY_BLACKLIST_FILE) then return end
+    local content = readfile(AUTOPARRY_BLACKLIST_FILE)
+    if not content or content == "" then return end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(content)
+    end)
+    if ok and type(data) == "table" then
+        autoparryBlacklist = data
+    end
+end
+
+local function addToBlacklist(animId)
+    local id = tostring(animId or ""):gsub("rbxassetid://", "")
+    if id == "" then
+        return false, "Empty ID"
+    end
+    autoparryBlacklist[id] = true
+    saveBlacklist()
+    return true, id
+end
+
+local function isBlacklisted(animId)
+    return autoparryBlacklist[tostring(animId or ""):gsub("rbxassetid://", "")]
+end
+
+local function pruneBlacklistedAutoparry()
+    local removed = false
+    for animId, _ in pairs(autoparryAnimations) do
+        if isBlacklisted(animId) then
+            autoparryAnimations[animId] = nil
+            removed = true
+        end
+    end
+    if removed then
+        saveAutoparryAsJSON()
     end
 end
 
@@ -957,26 +617,28 @@ local function mergeGlobalAnimations(globalAnims)
     local updated = 0
     
     for animId, data in pairs(globalAnims) do
-        local incoming = {
+        if not isBlacklisted(animId) then
+            local incoming = {
             name = data.name or "Unknown",
             timing = data.timing or 0.15,
             enabled = data.enabled ~= false,
             range = data.range or 15,
             source = "global"
         }
-        if not autoparryAnimations[animId] then
-            autoparryAnimations[animId] = incoming
-            added = added + 1
-        else
-            -- Update timing/name/range/enabled for non-manual entries
-            local localAnim = autoparryAnimations[animId]
-            if localAnim.source ~= "manual" then
-                localAnim.name = incoming.name
-                localAnim.timing = incoming.timing
-                localAnim.range = incoming.range
-                localAnim.enabled = incoming.enabled
-                localAnim.source = "global"
-                updated = updated + 1
+            if not autoparryAnimations[animId] then
+                autoparryAnimations[animId] = incoming
+                added = added + 1
+            else
+                -- Update timing/name/range/enabled for non-manual entries
+                local localAnim = autoparryAnimations[animId]
+                if localAnim.source ~= "manual" then
+                    localAnim.name = incoming.name
+                    localAnim.timing = incoming.timing
+                    localAnim.range = incoming.range
+                    localAnim.enabled = incoming.enabled
+                    localAnim.source = "global"
+                    updated = updated + 1
+                end
             end
         end
     end
@@ -1293,6 +955,10 @@ local function trackEnemyAnimation(animId, animName, playerName, distance, animT
     end
     
     local cleanId = rawId:gsub("rbxassetid://", "")
+
+    if isBlacklisted(cleanId) then
+        return
+    end
     
     -- Don't track if already in our autoparry list
     if autoparryAnimations[cleanId] then
@@ -1427,6 +1093,16 @@ local function setupManualParryDetection()
                         local animId = bestMatch.id
                         local animData = bestMatch.data
                         local calculatedTiming = bestMatch.timing
+                        
+                        if isBlacklisted(animId) then
+                            Rayfield:Notify({
+                                Title = "Blocked Animation",
+                                Content = "ID " .. animId .. " is blacklisted and won't be learned",
+                                Duration = 3,
+                                Image = "slash",
+                            })
+                            return
+                        end
                         
                         local existingAnim = autoparryAnimations[animId]
                         local shouldLearn = false
@@ -1591,7 +1267,7 @@ local function setupHealthMonitoring()
                 end
                 
                 -- Learn from the damage - we need to parry EARLIER than when damage hit
-                if bestMatch and not autoparryAnimations[bestMatch.id] then
+                if bestMatch and not autoparryAnimations[bestMatch.id] and not isBlacklisted(bestMatch.id) then
                     local animId = bestMatch.id
                     local animData = bestMatch.data
                     -- Parry timing should be slightly before when damage occurred
@@ -1685,6 +1361,10 @@ local function setupAutoparryForPlayer(player)
             local anim = animationTrack.Animation
             local rawAnimId = tostring(anim.AnimationId)
             local cleanId = rawAnimId:gsub("rbxassetid://", "")
+
+            if isBlacklisted(cleanId) then
+                return
+            end
             
             -- Try to get a meaningful animation name from multiple sources
             local animName = "Unknown"
@@ -1889,8 +1569,11 @@ Players.PlayerAdded:Connect(setupAutoparryForPlayer)
 
 -- Load animations and setup players in background (don't block UI)
 task.spawn(function()
+    -- Load blacklist first so we don't load blocked animations
+    loadBlacklist()
     -- Load animations on startup
     loadAutoparryFromFile()
+    pruneBlacklistedAutoparry()
     
     -- Setup autoparry for all existing players
     for _, player in pairs(Players:GetPlayers()) do
@@ -1974,6 +1657,16 @@ AutoparryTab:CreateButton({
           })
           return
       end
+
+      if isBlacklisted(cleanId) then
+          Rayfield:Notify({
+              Title = "Blacklisted",
+              Content = "This ID is blacklisted and cannot be added",
+              Duration = 4,
+              Image = "slash",
+          })
+          return
+      end
       
       autoparryAnimations[cleanId] = {
           name = newAnimName,
@@ -2013,6 +1706,16 @@ AutoparryTab:CreateButton({
       end
       
       local lastAnim = loggedAnimationsArray[#loggedAnimationsArray]
+
+      if isBlacklisted(lastAnim.id) then
+          Rayfield:Notify({
+              Title = "Blacklisted",
+              Content = "Last logged animation is blacklisted",
+              Duration = 4,
+              Image = "slash",
+          })
+          return
+      end
       
       autoparryAnimations[lastAnim.id] = {
           name = lastAnim.name,
@@ -2113,106 +1816,33 @@ AutoparryTab:CreateSlider({
    end,
 })
 
-AutoparryTab:CreateSection("Individual Animation Editor")
+AutoparryTab:CreateSection("Blacklist (local only)")
 
--- Variables for individual editing
-local selectedAnimId = nil
-local selectedAnimData = nil
-local selectedAnimNumber = nil
-local animDropdown = nil
-
--- Function to get dropdown options with numbers
-local function getAnimationOptions()
-    local options = {}
-    local index = 1
-    for animId, data in pairs(autoparryAnimations) do
-        local displayName = "#" .. index .. " " .. (data.name or "Unknown") .. " [" .. string.sub(animId, 1, 10) .. "...]"
-        table.insert(options, displayName)
-        index = index + 1
-    end
-    if #options == 0 then
-        table.insert(options, "No animations saved")
-    end
-    return options
-end
-
--- Function to get animation by number
-local function getAnimByNumber(num)
-    local index = 1
-    for animId, data in pairs(autoparryAnimations) do
-        if index == num then
-            return animId, data, index
-        end
-        index = index + 1
-    end
-    return nil, nil, nil
-end
-
--- Function to find animation by display name (updated for numbered format)
-local function findAnimByDisplayName(displayName)
-    local index = 1
-    for animId, data in pairs(autoparryAnimations) do
-        local checkName = "#" .. index .. " " .. (data.name or "Unknown") .. " [" .. string.sub(animId, 1, 10) .. "...]"
-        if checkName == displayName then
-            return animId, data, index
-        end
-        index = index + 1
-    end
-    return nil, nil, nil
-end
-
-animDropdown = AutoparryTab:CreateDropdown({
-   Name = "Select Animation (or use number input below)",
-   Options = getAnimationOptions(),
-   CurrentOption = {},
-   MultipleOptions = false,
-   Flag = "AnimSelectDropdown",
-   Callback = function(Options)
-      local selected = Options[1]
-      if selected and selected ~= "No animations saved" then
-          selectedAnimId, selectedAnimData, selectedAnimNumber = findAnimByDisplayName(selected)
-          if selectedAnimData then
-              Rayfield:Notify({
-                  Title = "#" .. selectedAnimNumber .. " " .. (selectedAnimData.name or "Unknown"),
-                  Content = "Current timing: " .. string.format("%.3f", selectedAnimData.timing or defaultTiming) .. "s",
-                  Duration = 2,
-                  Image = "check",
-              })
-          end
-      end
-   end,
-})
+local lastBlacklistInput = ""
 
 AutoparryTab:CreateInput({
-   Name = "Select by Animation Number",
-   PlaceholderText = "Enter animation # (e.g. 1, 2, 3...)",
-   RemoveTextAfterFocusLost = false,
-   Flag = "AnimNumberInput",
+   Name = "Add Animation ID to Blacklist",
+   PlaceholderText = "Enter animation ID (enter to save)",
+   RemoveTextAfterFocusLost = true,
    Callback = function(Text)
-      local num = tonumber(Text)
-      if not num then
+      lastBlacklistInput = Text or ""
+      local ok, idOrErr = addToBlacklist(lastBlacklistInput)
+      if ok then
+          if autoparryAnimations[idOrErr] then
+              autoparryAnimations[idOrErr] = nil
+              saveAutoparryAsJSON()
+          end
           Rayfield:Notify({
-              Title = "Invalid Input",
-              Content = "Enter a number",
-              Duration = 2,
-              Image = "alert-circle",
-          })
-          return
-      end
-      
-      selectedAnimId, selectedAnimData, selectedAnimNumber = getAnimByNumber(num)
-      if selectedAnimData then
-          Rayfield:Notify({
-              Title = "#" .. selectedAnimNumber .. " " .. (selectedAnimData.name or "Unknown"),
-              Content = "Current timing: " .. string.format("%.3f", selectedAnimData.timing or defaultTiming) .. "s",
-              Duration = 2,
-              Image = "check",
+              Title = "Blacklisted",
+              Content = "Blocked animation ID " .. idOrErr,
+              Duration = 3,
+              Image = "slash",
           })
       else
           Rayfield:Notify({
-              Title = "Not Found",
-              Content = "No animation at #" .. num,
-              Duration = 2,
+              Title = "Blacklist Error",
+              Content = idOrErr,
+              Duration = 3,
               Image = "alert-circle",
           })
       end
@@ -2220,164 +1850,42 @@ AutoparryTab:CreateInput({
 })
 
 AutoparryTab:CreateButton({
-   Name = "Refresh Animation List",
+   Name = "View Blacklist",
    Callback = function()
-      if animDropdown and animDropdown.Set then
-          animDropdown:Set(getAnimationOptions()[1] or "No animations saved")
+      if next(autoparryBlacklist) == nil then
+          Rayfield:Notify({
+              Title = "Blacklist Empty",
+              Content = "No animations are currently blocked",
+              Duration = 2,
+              Image = "info",
+          })
+          return
       end
-      -- Clear selection
-      selectedAnimId = nil
-      selectedAnimData = nil
-      selectedAnimNumber = nil
+      print("\n===== AUTOPARRY BLACKLIST =====")
+      for id, _ in pairs(autoparryBlacklist) do
+          print(id)
+      end
+      print("================================\n")
       Rayfield:Notify({
-          Title = "Refreshed",
-          Content = "Animation list updated",
+          Title = "Blacklist Printed",
+          Content = "Check console (F9) for IDs",
           Duration = 2,
-          Image = "refresh-cw",
-      })
-   end,
-})
-
-local newTimingValue = 0.15
-
-AutoparryTab:CreateSlider({
-   Name = "New Timing Value",
-   Range = {0.01, 1.0},
-   Increment = 0.01,
-   CurrentValue = 0.15,
-   Flag = "IndividualTimingSlider",
-   Callback = function(Value)
-      newTimingValue = Value
-   end,
-})
-
-AutoparryTab:CreateButton({
-   Name = "Apply Timing to Selected Animation",
-   Callback = function()
-      if not selectedAnimId or not autoparryAnimations[selectedAnimId] then
-          Rayfield:Notify({
-              Title = "No Animation Selected",
-              Content = "Select an animation from the dropdown first",
-              Duration = 2,
-              Image = "alert-circle",
-          })
-          return
-      end
-      
-      local oldTiming = autoparryAnimations[selectedAnimId].timing or defaultTiming
-      autoparryAnimations[selectedAnimId].timing = newTimingValue
-      saveAutoparryAsJSON()
-      
-      Rayfield:Notify({
-          Title = "Timing Updated",
-          Content = (autoparryAnimations[selectedAnimId].name or "Unknown") .. ": " .. string.format("%.3f", oldTiming) .. "s → " .. string.format("%.3f", newTimingValue) .. "s",
-          Duration = 3,
-          Image = "clock",
+          Image = "list",
       })
    end,
 })
 
 AutoparryTab:CreateButton({
-   Name = "Delete Selected Animation",
+   Name = "Clear Blacklist",
    Callback = function()
-      if not selectedAnimId or not autoparryAnimations[selectedAnimId] then
-          Rayfield:Notify({
-              Title = "No Animation Selected",
-              Content = "Select an animation from the dropdown first",
-              Duration = 2,
-              Image = "alert-circle",
-          })
-          return
-      end
-      
-      local animName = autoparryAnimations[selectedAnimId].name or "Unknown"
-      autoparryAnimations[selectedAnimId] = nil
-      saveAutoparryAsJSON()
-      
-      selectedAnimId = nil
-      selectedAnimData = nil
-      
+      autoparryBlacklist = {}
+      saveBlacklist()
+      pruneBlacklistedAutoparry()
       Rayfield:Notify({
-          Title = "Animation Deleted",
-          Content = animName .. " removed from autoparry list",
-          Duration = 3,
+          Title = "Blacklist Cleared",
+          Content = "All blocked IDs removed",
+          Duration = 2,
           Image = "trash-2",
-      })
-   end,
-})
-
-AutoparryTab:CreateButton({
-   Name = "Toggle Selected Animation",
-   Callback = function()
-      if not selectedAnimId or not autoparryAnimations[selectedAnimId] then
-          Rayfield:Notify({
-              Title = "No Animation Selected",
-              Content = "Select an animation from the dropdown first",
-              Duration = 2,
-              Image = "alert-circle",
-          })
-          return
-      end
-      
-      local current = autoparryAnimations[selectedAnimId].enabled
-      autoparryAnimations[selectedAnimId].enabled = not current
-      saveAutoparryAsJSON()
-      
-      local status = autoparryAnimations[selectedAnimId].enabled and "ENABLED" or "DISABLED"
-      Rayfield:Notify({
-          Title = status,
-          Content = (autoparryAnimations[selectedAnimId].name or "Unknown") .. " is now " .. status:lower(),
-          Duration = 2,
-          Image = autoparryAnimations[selectedAnimId].enabled and "check-circle" or "x-circle",
-      })
-   end,
-})
-
-local newAnimName = ""
-
-AutoparryTab:CreateInput({
-   Name = "New Animation Name",
-   CurrentValue = "",
-   PlaceholderText = "Enter custom name...",
-   RemoveTextAfterFocusLost = false,
-   Flag = "AnimNameInput",
-   Callback = function(Text)
-      newAnimName = Text
-   end,
-})
-
-AutoparryTab:CreateButton({
-   Name = "Rename Selected Animation",
-   Callback = function()
-      if not selectedAnimId or not autoparryAnimations[selectedAnimId] then
-          Rayfield:Notify({
-              Title = "No Animation Selected",
-              Content = "Select an animation from the dropdown first",
-              Duration = 2,
-              Image = "alert-circle",
-          })
-          return
-      end
-      
-      if newAnimName == "" then
-          Rayfield:Notify({
-              Title = "No Name Entered",
-              Content = "Enter a name in the text box first",
-              Duration = 2,
-              Image = "alert-circle",
-          })
-          return
-      end
-      
-      local oldName = autoparryAnimations[selectedAnimId].name or "Unknown"
-      autoparryAnimations[selectedAnimId].name = newAnimName
-      saveAutoparryAsJSON()
-      
-      Rayfield:Notify({
-          Title = "Renamed",
-          Content = oldName .. " → " .. newAnimName,
-          Duration = 3,
-          Image = "edit",
       })
    end,
 })
