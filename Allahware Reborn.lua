@@ -39,107 +39,497 @@ if shouldAutoExecute then
     task.wait(2)
     Rayfield:Notify({
         Title = "Auto-Execute",
-        AutoparryTab:CreateSection("Blacklist (local only)")
+        Content = "Script auto-executed after teleport!",
+        Duration = 5,
+        Image = "check-circle",
+    })
+end
 
-        local lastBlacklistInput = ""
+local Window = Rayfield:CreateWindow({
+   Name = "AllahWare: Reborn",
+   LoadingTitle = "AllahWare: Reborn",
+   LoadingSubtitle = "by Nigga Hater",
+   ConfigurationSaving = {
+      Enabled = true,
+      FolderName = "AllahWareReborn",
+      FileName = "Config"
+   },
+   Discord = {
+      Enabled = false,
+      Invite = "noinvitelink",
+      RememberJoins = true
+   },
+   KeySystem = false,
+   Theme = "Ocean"
+})
 
-        AutoparryTab:CreateInput({
-           Name = "Add Animation ID to Blacklist",
-           PlaceholderText = "Enter animation ID (enter to save)",
-           RemoveTextAfterFocusLost = true,
-           Callback = function(Text)
-              lastBlacklistInput = Text or ""
-              local ok, idOrErr = addToBlacklist(lastBlacklistInput)
-              if ok then
-                  if autoparryAnimations[idOrErr] then
-                      autoparryAnimations[idOrErr] = nil
-                      saveAutoparryAsJSON()
-                  end
-                  Rayfield:Notify({
-                      Title = "Blacklisted",
-                      Content = "Blocked animation ID " .. idOrErr,
-                      Duration = 3,
-                      Image = "slash",
-                  })
-              else
-                  Rayfield:Notify({
-                      Title = "Blacklist Error",
-                      Content = idOrErr,
-                      Duration = 3,
-                      Image = "alert-circle",
-                AutoparryTab:CreateSection("Blacklist (local only)")
+local placeIds = {
+    Tokyo = 14220581261,
+    EntDistrict = 17231846331,
+    Forest = 14220581641,
+    Plains = 14220581884,
+    SlayerVillage = 15240226383
+}
 
-                local lastBlacklistInput = ""
+local locationNames = {}
+for name, _ in pairs(placeIds) do
+    table.insert(locationNames, name)
+end
 
-                AutoparryTab:CreateInput({
-                   Name = "Add Animation ID to Blacklist",
-                   PlaceholderText = "Enter animation ID (enter to save)",
-                   RemoveTextAfterFocusLost = true,
-                   Callback = function(Text)
-                      lastBlacklistInput = Text or ""
-                      local ok, idOrErr = addToBlacklist(lastBlacklistInput)
-                      if ok then
-                          if autoparryAnimations[idOrErr] then
-                              autoparryAnimations[idOrErr] = nil
-                              saveAutoparryAsJSON()
-                          end
-                          Rayfield:Notify({
-                              Title = "Blacklisted",
-                              Content = "Blocked animation ID " .. idOrErr,
-                              Duration = 3,
-                              Image = "slash",
-                          })
-                      else
-                          Rayfield:Notify({
-                              Title = "Blacklist Error",
-                              Content = idOrErr,
-                              Duration = 3,
-                              Image = "alert-circle",
-                          })
-                      end
-                   end,
-                })
+local MainTab = Window:CreateTab("Teleports", "map-pin")
+local LoggerTab = Window:CreateTab("Anim Logger", "activity")
+local AutoparryTab = Window:CreateTab("Auto Parry", "shield")
 
-                AutoparryTab:CreateButton({
-                   Name = "View Blacklist",
-                   Callback = function()
-                      if next(autoparryBlacklist) == nil then
-                          Rayfield:Notify({
-                              Title = "Blacklist Empty",
-                              Content = "No animations are currently blocked",
-                              Duration = 2,
-                              Image = "info",
-                          })
-                          return
-                      end
-                      print("\n===== AUTOPARRY BLACKLIST =====")
-                      for id, _ in pairs(autoparryBlacklist) do
-                          print(id)
-                      end
-                      print("================================\n")
-                      Rayfield:Notify({
-                          Title = "Blacklist Printed",
-                          Content = "Check console (F9) for IDs",
-                          Duration = 2,
-                          Image = "list",
-                      })
-                   end,
-                })
+local selectedLocation = nil
 
-                AutoparryTab:CreateButton({
-                   Name = "Clear Blacklist",
-                   Callback = function()
-                      autoparryBlacklist = {}
-                      saveBlacklist()
-                      pruneBlacklistedAutoparry()
-                      Rayfield:Notify({
-                          Title = "Blacklist Cleared",
-                          Content = "All blocked IDs removed",
-                          Duration = 2,
-                          Image = "trash-2",
-                      })
-                   end,
-                })
+MainTab:CreateSection("World Teleports")
+
+MainTab:CreateParagraph({Title = "Auto-Execute Info", Content = "When you teleport, the script will automatically save a flag. When you rejoin/load into the new server, simply re-execute this script and it will detect the auto-execute flag!"})
+
+local TeleportDropdown = MainTab:CreateDropdown({
+   Name = "Select Location",
+   Options = locationNames,
+   CurrentOption = {"Select Location"},
+   MultipleOptions = false,
+   Flag = "TeleportDropdown",
+   Callback = function(Options)
+      selectedLocation = Options[1]
+   end,
+})
+
+MainTab:CreateButton({
+   Name = "Teleport",
+   Callback = function()
+      if selectedLocation and placeIds[selectedLocation] then
+         -- Set auto-execute flag before teleporting
+         if writefile then
+            writefile(autoExecuteFile, "true")
+         end
+         
+         Rayfield:Notify({
+            Title = "Teleporting",
+            Content = "Teleporting to " .. selectedLocation .. "... Script will auto-execute!",
+            Duration = 3,
+            Image = "map-pin",
+         })
+         
+         task.wait(1)
+         TeleportService:Teleport(placeIds[selectedLocation], LocalPlayer)
+      else
+         Rayfield:Notify({
+            Title = "Error",
+            Content = "Please select a valid location first!",
+            Duration = 5,
+            Image = "alert-circle",
+         })
+      end
+   end,
+})
+
+LoggerTab:CreateSection("Logger Controls")
+
+local loggingEnabled = false
+local loggedAnimations = {} -- Now stores: {id = {name, username, timestamp, count}}
+local loggedAnimationsArray = {} -- Array version for display
+local viewerGui = nil
+
+-- Forward declaration
+local updateAnimationViewer
+
+local function saveAnimationsToFile()
+    if not writefile then return end
+    
+    local content = "========================================\n"
+    content = content .. "ANIMATION LOG - " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
+    content = content .. "========================================\n\n"
+    
+    if #loggedAnimationsArray == 0 then
+        content = content .. "No animations logged yet.\n"
+    else
+        local animsByUser = {}
+        for _, anim in ipairs(loggedAnimationsArray) do
+            if not animsByUser[anim.username] then
+                animsByUser[anim.username] = {}
+            end
+            table.insert(animsByUser[anim.username], anim)
+        end
+        
+        for username, anims in pairs(animsByUser) do
+            content = content .. "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            content = content .. "USER: " .. username .. " (" .. #anims .. " animations)\n"
+            content = content .. "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            for idx, anim in ipairs(anims) do
+                local timestamp = os.date("%H:%M:%S", anim.timestamp)
+                content = content .. string.format(
+                    "  [%d] Name: %s\n      ID: %s\n      Time: %s\n\n",
+                    idx,
+                    anim.name,
+                    anim.id,
+                    timestamp
+                )
+            end
+        end
+    end
+    
+    content = content .. "\n========================================\n"
+    content = content .. "Total Animations Logged: " .. #loggedAnimationsArray .. "\n"
+    content = content .. "========================================\n"
+    
+    writefile("animations_log.txt", content)
+end
+
+local function logAnimation(id, name, username)
+    local cleanId = tostring(id):gsub("rbxassetid://", "")
+    
+    if not loggedAnimations[cleanId] then
+        loggedAnimations[cleanId] = {
+            name = name,
+            username = username,
+            timestamp = os.time(),
+            count = 1
+        }
+        table.insert(loggedAnimationsArray, {
+            id = cleanId,
+            name = name,
+            username = username,
+            timestamp = os.time()
+        })
+        
+        print("--------------------------------")
+        print("Animation Logged:")
+        print("Name: " .. tostring(name))
+        print("ID: " .. cleanId)
+        print("Username: " .. tostring(username))
+        print("Full Path: " .. tostring(id))
+        
+        -- Save to file
+        saveAnimationsToFile()
+        
+        -- Update the viewer if it's open
+        updateAnimationViewer()
+        
+        -- Seliware clipboard support
+        if setclipboard then
+            setclipboard(cleanId)
+        end
+    else
+        loggedAnimations[cleanId].count = (loggedAnimations[cleanId].count or 1) + 1
+    end
+end
+
+local function setupLogger(character)
+    local humanoid = character:WaitForChild("Humanoid")
+    local player = Players:GetPlayerFromCharacter(character)
+    if not player then return end
+    
+    humanoid.AnimationPlayed:Connect(function(animationTrack)
+        if loggingEnabled then
+            -- Check distance (only log if within 50 studs)
+            local localChar = LocalPlayer.Character
+            if not localChar then return end
+            
+            local localRoot = localChar:FindFirstChild("HumanoidRootPart")
+            local targetRoot = character:FindFirstChild("HumanoidRootPart")
+            
+            if localRoot and targetRoot then
+                local distance = (localRoot.Position - targetRoot.Position).Magnitude
+                
+                if distance <= 50 then
+                    local anim = animationTrack.Animation
+                    logAnimation(anim.AnimationId, anim.Name, player.Name)
+                end
+            end
+        end
+    end)
+end
+
+-- Setup logger for all existing players
+for _, player in pairs(Players:GetPlayers()) do
+    if player.Character then
+        setupLogger(player.Character)
+    end
+    player.CharacterAdded:Connect(setupLogger)
+end
+
+-- Setup logger for new players
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(setupLogger)
+    if player.Character then
+        setupLogger(player.Character)
+    end
+end)
+
+updateAnimationViewer = function()
+    if not viewerGui then return end
+    
+    local mainFrame = viewerGui:FindFirstChild("MainFrame")
+    if not mainFrame then return end
+    
+    local scrollFrame = mainFrame:FindFirstChild("ScrollFrame")
+    if not scrollFrame then return end
+    
+    local scrollContent = scrollFrame:FindFirstChild("ScrollContent")
+    if not scrollContent then return end
+    
+    -- Update stats label
+    local statsLabel = mainFrame:FindFirstChild("StatsLabel")
+    if statsLabel then
+        statsLabel.Text = "Total Animations: " .. #loggedAnimationsArray
+    end
+    
+    -- Clear existing content
+    for _, child in ipairs(scrollContent:GetChildren()) do
+        if child:IsA("UIListLayout") then continue end
+        child:Destroy()
+    end
+    
+    if #loggedAnimationsArray == 0 then
+        local emptyLabel = Instance.new("TextLabel")
+        emptyLabel.BackgroundTransparency = 1
+        emptyLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+        emptyLabel.TextSize = 14
+        emptyLabel.Font = Enum.Font.GothamMedium
+        emptyLabel.Text = "No animations logged yet.\nEnable logger and perform actions."
+        emptyLabel.TextWrapped = true
+        emptyLabel.Size = UDim2.new(1, -20, 0, 100)
+        emptyLabel.Parent = scrollContent
+    else
+        for index, anim in ipairs(loggedAnimationsArray) do
+            local timestamp = os.date("%H:%M:%S", anim.timestamp)
+            
+            -- Animation container card
+            local animCard = Instance.new("Frame")
+            animCard.Name = "AnimCard"
+            animCard.BackgroundColor3 = Color3.fromRGB(25, 30, 40)
+            animCard.BorderSizePixel = 0
+            animCard.Size = UDim2.new(1, -20, 0, 110)
+            animCard.Parent = scrollContent
+            
+            -- Add rounded corners
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, 8)
+            corner.Parent = animCard
+            
+            -- Index badge
+            local indexBadge = Instance.new("TextLabel")
+            indexBadge.BackgroundColor3 = Color3.fromRGB(50, 120, 200)
+            indexBadge.TextColor3 = Color3.fromRGB(255, 255, 255)
+            indexBadge.TextSize = 12
+            indexBadge.Font = Enum.Font.GothamBold
+            indexBadge.Text = "#" .. index
+            indexBadge.Size = UDim2.new(0, 40, 0, 20)
+            indexBadge.Position = UDim2.new(0, 8, 0, 8)
+            indexBadge.Parent = animCard
+            
+            local badgeCorner = Instance.new("UICorner")
+            badgeCorner.CornerRadius = UDim.new(0, 4)
+            badgeCorner.Parent = indexBadge
+            
+            -- Animation name
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.TextColor3 = Color3.fromRGB(200, 255, 200)
+            nameLabel.TextSize = 13
+            nameLabel.Font = Enum.Font.GothamBold
+            nameLabel.Text = anim.name
+            nameLabel.TextWrapped = true
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.Size = UDim2.new(1, -60, 0, 20)
+            nameLabel.Position = UDim2.new(0, 55, 0, 8)
+            nameLabel.Parent = animCard
+            
+            -- User label
+            local userLabel = Instance.new("TextLabel")
+            userLabel.BackgroundTransparency = 1
+            userLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
+            userLabel.TextSize = 11
+            userLabel.Font = Enum.Font.Gotham
+            userLabel.Text = "👤 " .. anim.username
+            userLabel.TextXAlignment = Enum.TextXAlignment.Left
+            userLabel.Size = UDim2.new(1, -16, 0, 18)
+            userLabel.Position = UDim2.new(0, 8, 0, 32)
+            userLabel.Parent = animCard
+            
+            -- ID label
+            local idLabel = Instance.new("TextLabel")
+            idLabel.BackgroundTransparency = 1
+            idLabel.TextColor3 = Color3.fromRGB(150, 180, 255)
+            idLabel.TextSize = 11
+            idLabel.Font = Enum.Font.GothamMedium
+            idLabel.Text = "🆔 " .. anim.id
+            idLabel.TextXAlignment = Enum.TextXAlignment.Left
+            idLabel.Size = UDim2.new(1, -16, 0, 18)
+            idLabel.Position = UDim2.new(0, 8, 0, 52)
+            idLabel.Parent = animCard
+            
+            -- Time label
+            local timeLabel = Instance.new("TextLabel")
+            timeLabel.BackgroundTransparency = 1
+            timeLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+            timeLabel.TextSize = 10
+            timeLabel.Font = Enum.Font.Gotham
+            timeLabel.Text = "🕐 " .. timestamp
+            timeLabel.TextXAlignment = Enum.TextXAlignment.Left
+            timeLabel.Size = UDim2.new(0.5, -16, 0, 18)
+            timeLabel.Position = UDim2.new(0, 8, 0, 72)
+            timeLabel.Parent = animCard
+            
+            -- Copy button
+            local idCopy = anim.id
+            local copyBtn = Instance.new("TextButton")
+            copyBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 180)
+            copyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            copyBtn.TextSize = 11
+            copyBtn.Font = Enum.Font.GothamBold
+            copyBtn.Text = "📋 Copy ID"
+            copyBtn.Size = UDim2.new(0.45, -8, 0, 26)
+            copyBtn.Position = UDim2.new(0.55, 0, 1, -34)
+            copyBtn.BorderSizePixel = 0
+            copyBtn.Parent = animCard
+            
+            local btnCorner = Instance.new("UICorner")
+            btnCorner.CornerRadius = UDim.new(0, 6)
+            btnCorner.Parent = copyBtn
+            
+            copyBtn.MouseButton1Click:Connect(function()
+                if setclipboard then
+                    setclipboard(idCopy)
+                    copyBtn.Text = "✓ Copied!"
+                    copyBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 100)
+                    task.wait(1)
+                    copyBtn.Text = "📋 Copy ID"
+                    copyBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 180)
+                end
+            end)
+        end
+    end
+end
+
+local function createAnimationViewer()
+    if viewerGui then
+        viewerGui:Destroy()
+    end
+    
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "AnimationViewerGui"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    
+    viewerGui = ScreenGui
+    
+    -- Main window frame
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Size = UDim2.new(0, 650, 0, 750)
+    MainFrame.Position = UDim2.new(0.5, -325, 0.5, -375)
+    MainFrame.Parent = ScreenGui
+    
+    -- Add shadow/border effect
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0, 12)
+    mainCorner.Parent = MainFrame
+    
+    local borderGradient = Instance.new("UIStroke")
+    borderGradient.Color = Color3.fromRGB(80, 140, 220)
+    borderGradient.Thickness = 2
+    borderGradient.Parent = MainFrame
+    
+    -- Make frame draggable
+    local dragging, dragInput, dragStart, startPos
+    local UserInputService = game:GetService("UserInputService")
+    
+    MainFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    MainFrame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            MainFrame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    
+    -- Make frame resizable
+    local ResizeHandle = Instance.new("TextButton")
+    ResizeHandle.Name = "ResizeHandle"
+    ResizeHandle.BackgroundColor3 = Color3.fromRGB(80, 140, 220)
+    ResizeHandle.BorderSizePixel = 0
+    ResizeHandle.Size = UDim2.new(0, 20, 0, 20)
+    ResizeHandle.Position = UDim2.new(1, -20, 1, -20)
+    ResizeHandle.Text = "⬀"
+    ResizeHandle.TextSize = 16
+    ResizeHandle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ResizeHandle.Font = Enum.Font.GothamBold
+    ResizeHandle.ZIndex = 10
+    ResizeHandle.Parent = MainFrame
+    
+    local resizeCorner = Instance.new("UICorner")
+    resizeCorner.CornerRadius = UDim.new(0, 6)
+    resizeCorner.Parent = ResizeHandle
+    
+    local resizing = false
+    local resizeStart, sizeStart
+    
+    ResizeHandle.MouseButton1Down:Connect(function()
+        resizing = true
+        resizeStart = UserInputService:GetMouseLocation()
+        sizeStart = MainFrame.Size
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            resizing = false
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement and resizing then
+            local mousePos = UserInputService:GetMouseLocation()
+            local delta = mousePos - resizeStart
+            
+            local newWidth = math.max(400, sizeStart.X.Offset + delta.X)
+            local newHeight = math.max(300, sizeStart.Y.Offset + delta.Y)
+            
+            MainFrame.Size = UDim2.new(0, newWidth, 0, newHeight)
+        end
+    end)
+    
+    -- Title bar
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Name = "TitleBar"
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 60, 120)
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Size = UDim2.new(1, 0, 0, 50)
+    TitleBar.Parent = MainFrame
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 12)
+    titleCorner.Parent = TitleBar
+    
     -- Cover bottom corners
     local titleCover = Instance.new("Frame")
     titleCover.BackgroundColor3 = Color3.fromRGB(30, 60, 120)
@@ -498,6 +888,11 @@ function saveAutoparryAsJSON()
     if not writefile or not HttpService then return end
     local json = HttpService:JSONEncode(autoparryAnimations)
     writefile("autoparry_animations_data.txt", json)
+end
+
+-- Legacy stub (JSON is primary)
+local function saveAutoparryToFile()
+    saveAutoparryAsJSON()
 end
 
 -- Load autoparry animations from disk
