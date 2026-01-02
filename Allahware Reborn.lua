@@ -32,6 +32,9 @@ local function setupCursor()
     Mouse.Icon = "rbxasset://textures/Cursor.png" -- Default cursor
 end
 
+-- Performance optimization: disable verbose logging by default
+local VERBOSE_LOGGING = false
+
 task.spawn(setupCursor)
 
 -- Auto-execute notification
@@ -1112,6 +1115,51 @@ local parryAttempts = {} -- {animId = {timestamp, animData, playerName, distance
 local lastHealth = 100
 local pingCompensation = 0
 
+-- Animation lock system: tracks parry successes/failures to lock/unlock timings
+local animationParrySuccesses = {} -- {animId = count}
+local animationParryFailures = {} -- {animId = count}
+local LOCK_THRESHOLD = 5 -- Lock after 5 successful parries
+local UNLOCK_THRESHOLD = 5 -- Unlock after 5 failures
+
+-- Check if an animation's timing is locked
+local function isAnimationLocked(animId)
+    return (animationParrySuccesses[animId] or 0) >= LOCK_THRESHOLD and (animationParryFailures[animId] or 0) < UNLOCK_THRESHOLD
+end
+
+-- Record a successful parry and check for locking
+local function recordParrySuccess(animId)
+    animationParrySuccesses[animId] = (animationParrySuccesses[animId] or 0) + 1
+    local successCount = animationParrySuccesses[animId]
+    local animName = autoparryAnimations[animId] and autoparryAnimations[animId].name or "Anim_" .. animId
+    
+    if successCount == LOCK_THRESHOLD then
+        print("[LOCK SYSTEM] Animation " .. animId .. " locked after " .. successCount .. " successful parries")
+        Rayfield:Notify({
+            Title = "🔒 Animation Locked",
+            Content = animName .. " locked after 5 successful parries!",
+            Duration = 4,
+            Image = "lock",
+        })
+    end
+end
+
+-- Record a parry failure and check for unlocking
+local function recordParryFailure(animId)
+    animationParryFailures[animId] = (animationParryFailures[animId] or 0) + 1
+    local failureCount = animationParryFailures[animId]
+    local animName = autoparryAnimations[animId] and autoparryAnimations[animId].name or "Anim_" .. animId
+    
+    if failureCount == UNLOCK_THRESHOLD then
+        print("[LOCK SYSTEM] Animation " .. animId .. " unlocked after " .. failureCount .. " failed parries")
+        Rayfield:Notify({
+            Title = "🔓 Animation Unlocked",
+            Content = animName .. " unlocked after 5 failed parries!",
+            Duration = 4,
+            Image = "unlock",
+        })
+    end
+end
+
 -- Measured round-trip ping storage (seconds)
 local measuredPing = 0.05 -- Default 50ms RTT
 local pingSamples = {}
@@ -1250,7 +1298,7 @@ end
 
 -- Update ping measurement regularly (stops when script closes)
 task.spawn(function()
-    while scriptRunning and task.wait(1) do
+    while scriptRunning and task.wait(2) do -- Measure ping every 2 seconds instead of every second to reduce overhead
         local newPing = measureActualPing()
         if newPing then
             table.insert(pingSamples, newPing)
@@ -1269,9 +1317,9 @@ task.spawn(function()
     end
 end)
 
--- Sync global animations on startup (delayed to not slow down load)
+-- Sync global animations on startup (delayed significantly to not slow down load)
 task.spawn(function()
-    task.wait(3) -- Wait for script to fully load
+    task.wait(5) -- Wait longer for script and UI to fully load before syncing
     if autoSubmitEnabled then
         local globalAnims = fetchGlobalAnimations()
         if globalAnims then
@@ -1507,7 +1555,18 @@ local function setupManualParryDetection()
                             -- New animation - learn it
                             shouldLearn = true
                         else
-                            -- Existing animation - check if timing difference is significant (>0.05s)
+                            -- Existing animation - check lock status first
+                            if isAnimationLocked(animId) then
+                                Rayfield:Notify({
+                                    Title = "🔒 Animation Locked",
+                                    Content = animData.name .. " timing is locked after 5 successful parries. Fail 5 times to unlock.",
+                                    Duration = 4,
+                                    Image = "lock",
+                                })
+                                return
+                            end
+                            
+                            -- Check if timing difference is significant (>0.05s)
                             local timingDiff = math.abs(existingAnim.timing - calculatedTiming)
                             if timingDiff > 0.05 then
                                 shouldLearn = true
@@ -1589,48 +1648,87 @@ local function setupHealthMonitoring()
     if not humanoid then return end
     
     lastHealth = humanoid.Health
+    local lastProcessTime = 0 -- Debounce health checks to avoid processing every micro-change
     
     humanoid.HealthChanged:Connect(function(newHealth)
         if newHealth < lastHealth then
-            local damage = lastHealth - newHealth
             local currentTime = tick()
-            local parryFailed = false
+            -- Only process damage if enough time has passed (debounce) to reduce loop overhead
+            if currentTime - lastProcessTime < 0.05 then return end
+            lastProcessTime = currentTime
             
-            -- Check if we recently attempted a parry (within last 1.5 seconds with ping comp)
+            local damage = lastHealth - newHealth
+            local failedAttempt = nil
+            
+            -- Early exit if no parry attempts are tracked
+            if not next(parryAttempts) then
+                lastHealth = newHealth
+                return
+            end
+            
+            -- Check if we recently attempted a parry (tight window for fast-paced fights)
             for attemptKey, attemptData in pairs(parryAttempts) do
                 local timeSinceAttempt = currentTime - attemptData.timestamp
                 
                 -- Detect parry failure: damage taken within reasonable window after parry attempt
                 if timeSinceAttempt >= 0.01 and timeSinceAttempt <= 1.5 then
-                    -- We took damage shortly after parry attempt - likely failed
-                    parryFailed = true
-                    
-                    local animId = attemptData.animId
-                    
-                    -- DON'T auto-update timing from failed parries - the logic of "add time" is unreliable
-                    -- Failed parry could mean we parried too early OR too late
-                    -- Only log the failure, let manual parries or damage-based learning fix it
-                    
-                    print("========================================")
-                    print("⚠️ PARRY FAILED")
-                    print("========================================")
-                    print("Animation: " .. attemptData.animData.name)
-                    print("ID: " .. animId)
-                    print("Attacker: " .. attemptData.playerName)
-                    print("Distance: " .. attemptData.distance .. " studs")
-                    print("Current Timing: " .. string.format("%.3f", attemptData.animData.timing) .. "s")
-                    print("Time Since Parry: " .. string.format("%.3f", timeSinceAttempt) .. "s")
-                    print("TIP: Manually parry this attack successfully to update timing")
-                    print("========================================\n")
-                    
-                    -- Remove from tracking
-                    parryAttempts[attemptKey] = nil
-                    break
+                    -- Store the failed attempt for learning below
+                    if not failedAttempt then
+                        failedAttempt = {
+                            key = attemptKey,
+                            data = attemptData,
+                            timeSinceAttempt = timeSinceAttempt
+                        }
+                    end
                 end
             end
             
-            -- LEARN FROM FAILED PARRIES: If we took damage and there's a recent enemy animation, learn it
-            if autoLearnEnabled and not parryFailed then
+            -- Log and learn from the failed parry if one was detected
+            if failedAttempt then
+                local attemptData = failedAttempt.data
+                local animId = attemptData.animId
+                
+                -- Record the failure for lock/unlock system
+                recordParryFailure(animId)
+                
+                print("========================================")
+                print("⚠️ PARRY FAILED")
+                print("========================================")
+                print("Animation: " .. attemptData.animData.name)
+                print("ID: " .. animId)
+                print("Attacker: " .. attemptData.playerName)
+                print("Distance: " .. attemptData.distance .. " studs")
+                print("Current Timing: " .. string.format("%.3f", attemptData.animData.timing) .. "s")
+                print("Time Since Parry: " .. string.format("%.3f", failedAttempt.timeSinceAttempt) .. "s")
+                print("TIP: Manually parry this attack successfully to update timing")
+                print("========================================\n")
+                
+                -- LEARN FROM FAILED PARRIES: auto-refine failed animation timing (unless locked)
+                if autoLearnEnabled and not autoparryAnimations[animId] and not isAnimationLocked(animId) then
+                    -- Learn new animation from failed parry
+                    autoparryAnimations[animId] = {
+                        name = attemptData.animData.name,
+                        timing = attemptData.animData.timing,
+                        enabled = true,
+                        range = attemptData.animData.range or 15,
+                        source = "damage"
+                    }
+                    saveAutoparryAsJSON()
+                    
+                    Rayfield:Notify({
+                        Title = "📚 Learned from Failed Parry",
+                        Content = attemptData.animData.name .. " - retry manually to refine",
+                        Duration = 4,
+                        Image = "book-open",
+                    })
+                end
+                
+                -- Remove from tracking
+                parryAttempts[failedAttempt.key] = nil
+            end
+            
+            -- FALLBACK: Learn from passive damage if no parry was attempted
+            if autoLearnEnabled and not failedAttempt then
                 -- Find the CLOSEST player who recently attacked us (not just most recent animation)
                 -- This prevents learning wrong animations when multiple fights are happening nearby
                 local bestMatch = nil
@@ -1662,7 +1760,7 @@ local function setupHealthMonitoring()
                 end
                 
                 -- Learn from the damage - we need to parry EARLIER than when damage hit
-                if bestMatch and not autoparryAnimations[bestMatch.id] and not isBlacklisted(bestMatch.id) then
+                if bestMatch and not autoparryAnimations[bestMatch.id] and not isBlacklisted(bestMatch.id) and not isAnimationLocked(bestMatch.id) then
                     local animId = bestMatch.id
                     local animData = bestMatch.data
                     -- Parry timing should be slightly before when damage occurred
@@ -1741,228 +1839,301 @@ end
 
 -- Track active animations
 local activeAnimations = {}
+local connectedCharacters = {}
 
--- Animation detection function - properly connects to each player's humanoid
-local function setupAutoparryForPlayer(player)
-    if player == LocalPlayer then return end
+-- Shared autoparry attachment for any character (players or NPCs)
+local function setupAutoparryForCharacter(character, attackerName, sourceType)
+    if not character or character == LocalPlayer.Character then return end
+    if connectedCharacters[character] then return end
+    connectedCharacters[character] = true
+
+    local animName = "Unknown"
+    if animationTrack.Name and animationTrack.Name ~= "" and animationTrack.Name ~= "Animation" then
+        animName = animationTrack.Name
+    elseif anim.Name and anim.Name ~= "" and anim.Name ~= "Animation" then
+        animName = anim.Name
+    elseif anim.Parent and anim.Parent.Name and anim.Parent.Name ~= "Animation" then
+        animName = anim.Parent.Name
+    else
+        animName = "Anim_" .. cleanId
+    end
     
-    local function onCharacterAdded(character)
-        task.wait(0.5) -- Wait for character to load
-        
-        local humanoid = character:FindFirstChild("Humanoid")
-        if not humanoid then return end
-        
-        humanoid.AnimationPlayed:Connect(function(animationTrack)
-            local anim = animationTrack.Animation
-            local rawAnimId = tostring(anim.AnimationId)
-            local cleanId = rawAnimId:gsub("rbxassetid://", "")
+    if VERBOSE_LOGGING then
+        print("[AUTOPARRY] Attaching animation hooks to " .. attackerName .. " (" .. (sourceType or "Unknown") .. ")")
+    end
 
-            if isBlacklisted(cleanId) then
+    humanoid.AnimationPlayed:Connect(function(animationTrack)
+        local anim = animationTrack.Animation
+        local rawAnimId = tostring(anim.AnimationId)
+        local cleanId = rawAnimId:gsub("rbxassetid://", "")
+
+        if isBlacklisted(cleanId) then
+            return
+        end
+        
+        -- Try to get a meaningful animation name from multiple sources
+        local animName = "Unknown"
+        if animationTrack.Name and animationTrack.Name ~= "" and animationTrack.Name ~= "Animation" then
+            animName = animationTrack.Name
+        elseif anim.Name and anim.Name ~= "" and anim.Name ~= "Animation" then
+            animName = anim.Name
+        elseif anim.Parent and anim.Parent.Name and anim.Parent.Name ~= "Animation" then
+            animName = anim.Parent.Name
+        else
+            animName = "Anim_" .. cleanId
+        end
+        
+        -- Calculate distance
+        local distance = math.huge
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            local localRoot = LocalPlayer.Character.HumanoidRootPart
+            local targetRoot = character:FindFirstChild("HumanoidRootPart")
+            if targetRoot then
+                distance = (localRoot.Position - targetRoot.Position).Magnitude
+            end
+        end
+        
+        -- Track this animation for manual parry learning (works even with autoparry off)
+        -- Skip looped animations for learning only (not for autoparry)
+        if autoLearnEnabled and distance <= 20 and not animationTrack.Looped then
+            trackEnemyAnimation(rawAnimId, animName, attackerName, distance, animationTrack)
+        end
+        
+        -- Autoparry logic only runs if enabled
+        if not autoparryEnabled then return end
+        
+        -- Check if this animation is in our autoparry list
+        if autoparryAnimations[cleanId] and autoparryAnimations[cleanId].enabled then
+            local animData = autoparryAnimations[cleanId]
+            local timing = animData.timing or defaultTiming
+            
+            -- Check if already queued
+            local queueKey = cleanId .. "_" .. attackerName
+            if activeParryQueue[queueKey] then
                 return
             end
             
-            -- Try to get a meaningful animation name from multiple sources
-            local animName = "Unknown"
+            -- Distance/hitbox check
+            local shouldParry = false
+            local distance = 0
             
-            -- 1. Try AnimationTrack.Name (sometimes has proper names)
-            if animationTrack.Name and animationTrack.Name ~= "" and animationTrack.Name ~= "Animation" then
-                animName = animationTrack.Name
-            -- 2. Try Animation.Name
-            elseif anim.Name and anim.Name ~= "" and anim.Name ~= "Animation" then
-                animName = anim.Name
-            -- 3. Try to get parent folder name (animations are often in named folders)
-            elseif anim.Parent and anim.Parent.Name and anim.Parent.Name ~= "Animation" then
-                animName = anim.Parent.Name
-            -- 4. Fall back to using the ID as name
-            else
-                animName = "Anim_" .. cleanId
-            end
-            
-            -- Calculate distance
-            local distance = math.huge
             if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
                 local localRoot = LocalPlayer.Character.HumanoidRootPart
                 local targetRoot = character:FindFirstChild("HumanoidRootPart")
+                
                 if targetRoot then
                     distance = (localRoot.Position - targetRoot.Position).Magnitude
-                end
-            end
-            
-            -- Track this animation for manual parry learning (works even with autoparry off)
-            -- Skip looped animations for learning only (not for autoparry)
-            if autoLearnEnabled and distance <= 20 and not animationTrack.Looped then
-                trackEnemyAnimation(rawAnimId, animName, player.Name, distance, animationTrack)
-            end
-            
-            -- Autoparry logic only runs if enabled
-            if not autoparryEnabled then return end
-            
-            -- Check if this animation is in our autoparry list
-            if autoparryAnimations[cleanId] and autoparryAnimations[cleanId].enabled then
-                local animData = autoparryAnimations[cleanId]
-                local timing = animData.timing or defaultTiming
-                
-                -- Check if already queued
-                local queueKey = cleanId .. "_" .. player.Name
-                if activeParryQueue[queueKey] then
-                    return
-                end
-                
-                -- Distance/hitbox check
-                local shouldParry = false
-                local distance = 0
-                
-                if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                    local localRoot = LocalPlayer.Character.HumanoidRootPart
-                    local targetRoot = character:FindFirstChild("HumanoidRootPart")
                     
-                    if targetRoot then
-                        distance = (localRoot.Position - targetRoot.Position).Magnitude
-                        
-                        -- Calculate combined hitbox size
-                        local localSize = localRoot.Size
-                        local targetSize = targetRoot.Size
-                        
-                        -- Get hitbox radius for both characters
-                        local localRadius = math.max(localSize.X, localSize.Z) / 2
-                        local targetRadius = math.max(targetSize.X, targetSize.Z) / 2
-                        
-                        -- Account for typical melee attack range (add extra range for weapons/abilities)
-                        local attackRange = animData.range or 15 -- Default 15 studs attack range
-                        local combinedHitbox = localRadius + targetRadius + attackRange
-                        
-                        -- Check if hitboxes would overlap
-                        if distance <= combinedHitbox then
-                            shouldParry = true
-                        end
+                    -- Calculate combined hitbox size
+                    local localSize = localRoot.Size
+                    local targetSize = targetRoot.Size
+                    
+                    -- Get hitbox radius for both characters
+                    local localRadius = math.max(localSize.X, localSize.Z) / 2
+                    local targetRadius = math.max(targetSize.X, targetSize.Z) / 2
+                    
+                    -- Account for typical melee attack range (add extra range for weapons/abilities)
+                    local attackRange = animData.range or 15 -- Default 15 studs attack range
+                    local combinedHitbox = localRadius + targetRadius + attackRange
+                    
+                    -- Check if hitboxes would overlap
+                    if distance <= combinedHitbox then
+                        shouldParry = true
                     end
                 end
-                
-                if shouldParry then
-                    -- Refresh ping right before timing for best accuracy
-                    local livePing = fetchImmediatePing()
-                    if livePing then
-                        measuredPing = livePing
-                        pingCompensation = getPingCompensation()
-                    end
+            end
+            
+            if shouldParry then
+                -- Refresh ping right before timing for best accuracy
+                local livePing = fetchImmediatePing()
+                if livePing then
+                    measuredPing = livePing
+                    pingCompensation = getPingCompensation()
+                end
 
-                    -- Apply ping compensation to timing (one-way latency)
-                    local compensatedTiming = math.max(0.01, timing - pingCompensation)
+                -- Apply ping compensation to timing (one-way latency)
+                local compensatedTiming = math.max(0.01, timing - pingCompensation)
+                
+                -- Mark as queued
+                activeParryQueue[queueKey] = true
+                
+                -- Log the detection
+                print("========================================")
+                print("AUTOPARRY TRIGGERED")
+                print("Animation: " .. animData.name)
+                print("ID: " .. cleanId)
+                print("Attacker: " .. attackerName .. " (" .. (sourceType or "Unknown") .. ")")
+                print("Distance: " .. math.floor(distance) .. " studs")
+                print("Base Timing: " .. string.format("%.3f", timing) .. "s")
+                print("Ping RTT: " .. string.format("%.0f", measuredPing * 1000) .. "ms")
+                print("Ping Comp (one-way): " .. string.format("%.0f", pingCompensation * 1000) .. "ms")
+                print("Final Timing: " .. string.format("%.3f", compensatedTiming) .. "s")
+                print("========================================")
+                
+                -- Wait for timing with continuous feint checking
+                -- Break the delay into larger chunks to reduce overhead
+                task.spawn(function()
+                    local waitTime = compensatedTiming
+                    local checkInterval = 0.05 -- Check every 50ms instead of 20ms to reduce task.wait calls
+                    local elapsed = 0
                     
-                    -- Mark as queued
-                    activeParryQueue[queueKey] = true
-                    
-                    -- Log the detection
-                    print("========================================")
-                    print("AUTOPARRY TRIGGERED")
-                    print("Animation: " .. animData.name)
-                    print("ID: " .. cleanId)
-                    print("Player: " .. player.Name)
-                    print("Distance: " .. math.floor(distance) .. " studs")
-                    print("Base Timing: " .. string.format("%.3f", timing) .. "s")
-                    print("Ping RTT: " .. string.format("%.0f", measuredPing * 1000) .. "ms")
-                    print("Ping Comp (one-way): " .. string.format("%.0f", pingCompensation * 1000) .. "ms")
-                    print("Final Timing: " .. string.format("%.3f", compensatedTiming) .. "s")
-                    print("========================================")
-                    
-                    -- Wait for timing with continuous feint checking
-                    -- Break the delay into small chunks and check for feints between each
-                    task.spawn(function()
-                        local waitTime = compensatedTiming
-                        local checkInterval = 0.02 -- Check every 20ms
-                        local elapsed = 0
-                        
-                        while elapsed < waitTime do
-                            -- Check for feint before each wait
-                            if feintedPlayers[player.Name] then
-                                activeParryQueue[queueKey] = nil
-                                print("[AUTOPARRY] " .. player.Name .. " feinted - parry cancelled (during wait)")
-                                return
-                            end
-                            
-                            local sleepTime = math.min(checkInterval, waitTime - elapsed)
-                            task.wait(sleepTime)
-                            elapsed = elapsed + sleepTime
-                        end
-                        
-                        -- Remove from queue
-                        activeParryQueue[queueKey] = nil
-                        
-                        -- Final feint check right before parry
-                        if feintedPlayers[player.Name] then
-                            print("[AUTOPARRY] " .. player.Name .. " feinted - parry cancelled")
+                    while elapsed < waitTime do
+                        -- Check for feint before each wait
+                        if feintedPlayers[attackerName] then
+                            activeParryQueue[queueKey] = nil
+                            print("[AUTOPARRY] " .. attackerName .. " feinted - parry cancelled (during wait)")
                             return
                         end
                         
-                        -- Final distance check before parrying (player might have moved)
-                        local finalDistance = distance
-                        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                            local localRoot = LocalPlayer.Character.HumanoidRootPart
-                            local targetRoot = character:FindFirstChild("HumanoidRootPart")
-                            if targetRoot then
-                                finalDistance = (localRoot.Position - targetRoot.Position).Magnitude
-                            end
+                        local sleepTime = math.min(checkInterval, waitTime - elapsed)
+                        task.wait(sleepTime)
+                        elapsed = elapsed + sleepTime
+                    end
+                    
+                    -- Remove from queue
+                    activeParryQueue[queueKey] = nil
+                    
+                    -- Final feint check right before parry
+                    if feintedPlayers[attackerName] then
+                        print("[AUTOPARRY] " .. attackerName .. " feinted - parry cancelled")
+                        return
+                    end
+                    
+                    -- Final distance check before parrying (attacker might have moved)
+                    local finalDistance = distance
+                    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        local localRoot = LocalPlayer.Character.HumanoidRootPart
+                        local targetRoot = character:FindFirstChild("HumanoidRootPart")
+                        if targetRoot then
+                            finalDistance = (localRoot.Position - targetRoot.Position).Magnitude
                         end
+                    end
+                    
+                    -- Only parry if still in range (with some tolerance)
+                    if finalDistance > (animData.range or 15) + 10 then
+                        print("[AUTOPARRY] Target moved out of range, skipping parry")
+                        return
+                    end
+                    
+                    -- Track parry attempt for failure detection (unique key per attempt to avoid overwrites during rapid chains)
+                    local attemptKey = string.format("%s_%s_%d", cleanId, attackerName, math.floor(tick() * 1000))
+                    parryAttempts[attemptKey] = {
+                        timestamp = tick(),
+                        animData = animData,
+                        playerName = attackerName,
+                        distance = math.floor(finalDistance),
+                        compensation = pingCompensation,
+                        animId = cleanId
+                    }
+                    
+                    -- Execute parry
+                    local parrySuccess = pressParryKey()
+                    
+                    if parrySuccess then
+                        -- Record successful parry for lock system
+                        recordParrySuccess(cleanId)
                         
-                        -- Only parry if still in range (with some tolerance)
-                        if finalDistance > (animData.range or 15) + 10 then
-                            print("[AUTOPARRY] Target moved out of range, skipping parry")
-                            return
+                        -- Smaller notification for successful parry attempts
+                        Rayfield:Notify({
+                            Title = "Parry: " .. animData.name,
+                            Content = attackerName .. " • " .. math.floor(finalDistance) .. " studs",
+                            Duration = 1.5,
+                            Image = "shield",
+                        })
+                    end
+                    
+                    -- Auto-remove from tracking after 2.5s if no damage taken (successful parry)
+                    -- Longer window allows damage from follow-up attacks to be attributed properly
+                    task.delay(2.5, function()
+                        if parryAttempts[attemptKey] and tick() - parryAttempts[attemptKey].timestamp >= 2.5 then
+                            -- Successful parry - removed from tracking silently
+                            parryAttempts[attemptKey] = nil
                         end
-                        
-                        -- Track parry attempt for failure detection (use unique key per player)
-                        local attemptKey = cleanId .. "_" .. player.Name
-                        parryAttempts[attemptKey] = {
-                            timestamp = tick(),
-                            animData = animData,
-                            playerName = player.Name,
-                            distance = math.floor(finalDistance),
-                            compensation = pingCompensation,
-                            animId = cleanId
-                        }
-                        
-                        -- Execute parry
-                        local parrySuccess = pressParryKey()
-                        
-                        if parrySuccess then
-                            -- Smaller notification for successful parry attempts
-                            Rayfield:Notify({
-                                Title = "Parry: " .. animData.name,
-                                Content = player.Name .. " • " .. math.floor(finalDistance) .. " studs",
-                                Duration = 1.5,
-                                Image = "shield",
-                            })
-                        end
-                        
-                        -- Auto-remove from tracking after 1.5s if no damage taken (successful parry)
-                        task.delay(1.5, function()
-                            if parryAttempts[attemptKey] and tick() - parryAttempts[attemptKey].timestamp >= 1.5 then
-                                -- Successful parry - removed from tracking silently
-                                parryAttempts[attemptKey] = nil
-                            end
-                        end)
                     end)
-                else
-                    -- Animation detected but out of range
-                    print("Animation detected but out of range: " .. animData.name .. " (" .. math.floor(distance) .. " studs)")
-                end
+                end)
+            else
+                -- Animation detected but out of range
+                print("Animation detected but out of range: " .. animData.name .. " (" .. math.floor(distance) .. " studs)")
             end
-        end)
+        end
+    end)
+end
+
+-- Player wrapper
+local function setupAutoparryForPlayer(player)
+    if player == LocalPlayer then return end
+
+    local function onCharacterAdded(character)
+        setupAutoparryForCharacter(character, player.Name, "Player")
     end
-    
-    -- Connect to existing character
+
     if player.Character then
         onCharacterAdded(player.Character)
     end
-    
-    -- Connect to future character spawns
+
     player.CharacterAdded:Connect(onCharacterAdded)
+end
+
+-- NPC wrapper
+local function setupAutoparryForNPC(model)
+    if not model or not model:IsA("Model") then return end
+    if model == LocalPlayer.Character then return end
+    if Players:GetPlayerFromCharacter(model) then return end -- skip player characters
+    if not model:FindFirstChild("Humanoid") then return end
+
+    print("[NPC WATCHER] Found NPC: " .. model.Name)
+    setupAutoparryForCharacter(model, model.Name, "NPC")
+end
+
+local function setupNPCWatcher()
+    -- Async sweep to find NPCs without blocking - limits depth to avoid lag
+    local function sweepWorkspaceAsync(parent, depth)
+        depth = depth or 0
+        if depth > 3 then return end -- Limit recursion depth to avoid scanning entire game tree
+        
+        local children = parent:GetChildren()
+        for i = 1, math.min(10, #children) do -- Process max 10 per frame to avoid frame drops
+            local inst = children[i]
+            if inst:IsA("Model") and inst:FindFirstChild("Humanoid") and not Players:GetPlayerFromCharacter(inst) then
+                setupAutoparryForNPC(inst)
+            end
+            -- Recursively check children with limit
+            if depth < 2 then
+                sweepWorkspaceAsync(inst, depth + 1)
+            end
+        end
+    end
+    
+    -- Defer the workspace sweep to avoid blocking UI load
+    task.delay(2, function()
+        print("[NPC WATCHER] Starting workspace sweep for NPCs...")
+        sweepWorkspaceAsync(workspace)
+        print("[NPC WATCHER] Workspace sweep complete")
+    end)
+
+    -- Watch for new NPC models or humanoids being added (lightweight, no recursion)
+    workspace.ChildAdded:Connect(function(inst)
+        if inst:IsA("Model") and inst:FindFirstChild("Humanoid") and not Players:GetPlayerFromCharacter(inst) then
+            setupAutoparryForNPC(inst)
+        end
+    end)
+    
+    workspace.DescendantAdded:Connect(function(inst)
+        if inst:IsA("Humanoid") then
+            local parentModel = inst.Parent
+            if parentModel and parentModel:IsA("Model") and not Players:GetPlayerFromCharacter(parentModel) then
+                print("[NPC WATCHER] Humanoid added to: " .. parentModel.Name)
+                setupAutoparryForNPC(parentModel)
+            end
+        end
+    end)
 end
 
 -- Setup autoparry for new players that join (connect early so we don't miss anyone)
 Players.PlayerAdded:Connect(setupAutoparryForPlayer)
+setupNPCWatcher()
 
--- Load animations and setup players in background (don't block UI)
+-- Load animations and setup characters in background (don't block UI)
 task.spawn(function()
     -- Load blacklist first so we don't load blocked animations
     loadBlacklist()
@@ -2208,6 +2379,121 @@ AutoparryTab:CreateSlider({
    Flag = "DefaultRangeSlider",
    Callback = function(Value)
       -- Update default range for new animations
+   end,
+})
+
+AutoparryTab:CreateSection("Animation Lock Management")
+
+AutoparryTab:CreateButton({
+   Name = "View Locked/Unlocked Animations",
+   Callback = function()
+      local lockedList = ""
+      local unlockedList = ""
+      local normalList = ""
+      
+      for animId, animData in pairs(autoparryAnimations) do
+         local successes = animationParrySuccesses[animId] or 0
+         local failures = animationParryFailures[animId] or 0
+         local isLocked = isAnimationLocked(animId)
+         local status = string.format("%s | S:%d F:%d", animData.name, successes, failures)
+         
+         if isLocked then
+            lockedList = lockedList .. "\n  • " .. status .. " 🔒"
+         elseif failures >= UNLOCK_THRESHOLD then
+            unlockedList = unlockedList .. "\n  • " .. status .. " 🔓"
+         else
+            normalList = normalList .. "\n  • " .. status
+         end
+      end
+      
+      local output = "===== ANIMATION LOCK STATUS =====\n"
+      if lockedList ~= "" then
+         output = output .. "\nLOCKED (5+ successes, <5 failures):" .. lockedList
+      end
+      if unlockedList ~= "" then
+         output = output .. "\n\nUNLOCKED (5+ failures):" .. unlockedList
+      end
+      if normalList ~= "" then
+         output = output .. "\n\nNORMAL:" .. normalList
+      end
+      if lockedList == "" and unlockedList == "" and normalList == "" then
+         output = output .. "No animations tracked yet"
+      end
+      output = output .. "\n\nFormat: Name | S:Successes F:Failures\n=================================="
+      
+      print(output)
+      Rayfield:Notify({
+         Title = "Lock Status Printed",
+         Content = "Check console (F9) for detailed lock status",
+         Duration = 3,
+         Image = "list",
+      })
+   end,
+})
+
+local lockAnimInput = ""
+local lockActionSelected = "Lock"
+
+AutoparryTab:CreateInput({
+   Name = "Animation ID to Lock/Unlock",
+   PlaceholderText = "Enter animation ID",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text)
+      lockAnimInput = Text
+   end,
+})
+
+AutoparryTab:CreateDropdown({
+   Name = "Action",
+   Options = {"Lock", "Unlock", "Reset Counters"},
+   CurrentOption = {"Lock"},
+   Flag = "LockAction",
+   Callback = function(Options)
+      lockActionSelected = Options[1]
+   end,
+})
+
+AutoparryTab:CreateButton({
+   Name = "Execute Lock Action",
+   Callback = function()
+      local cleanId = lockAnimInput:gsub("rbxassetid://", "")
+      
+      if cleanId == "" then
+         Rayfield:Notify({
+            Title = "Error",
+            Content = "Please enter an animation ID",
+            Duration = 3,
+            Image = "alert-circle",
+         })
+         return
+      end
+      
+      if lockActionSelected == "Lock" then
+         animationParrySuccesses[cleanId] = LOCK_THRESHOLD
+         Rayfield:Notify({
+            Title = "🔒 Locked",
+            Content = "Animation " .. cleanId .. " manually locked",
+            Duration = 3,
+            Image = "lock",
+         })
+      elseif lockActionSelected == "Unlock" then
+         animationParryFailures[cleanId] = UNLOCK_THRESHOLD
+         Rayfield:Notify({
+            Title = "🔓 Unlocked",
+            Content = "Animation " .. cleanId .. " manually unlocked",
+            Duration = 3,
+            Image = "unlock",
+         })
+      elseif lockActionSelected == "Reset Counters" then
+         animationParrySuccesses[cleanId] = 0
+         animationParryFailures[cleanId] = 0
+         Rayfield:Notify({
+            Title = "🔄 Reset",
+            Content = "Animation " .. cleanId .. " counters reset",
+            Duration = 3,
+            Image = "refresh-cw",
+         })
+      end
    end,
 })
 
