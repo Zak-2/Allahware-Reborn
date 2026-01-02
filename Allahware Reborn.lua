@@ -874,6 +874,44 @@ local GLOBAL_ANIMS_URL = "https://api.npoint.io/648f4993a0a4db7ba15a"
 local autoSubmitEnabled = true
 local lastGlobalSync = 0
 
+-- Forward declarations for persistence helpers
+local saveAutoparryAsJSON
+local loadAutoparryFromFile
+
+-- Save as JSON for better compatibility
+function saveAutoparryAsJSON()
+    if not writefile or not game:GetService("HttpService") then return end
+    local json = game:GetService("HttpService"):JSONEncode(autoparryAnimations)
+    writefile("autoparry_animations_data.txt", json)
+end
+
+-- Load autoparry animations from disk
+function loadAutoparryFromFile()
+    if not isfile or not isfile("autoparry_animations_data.txt") then 
+        return 
+    end
+    local content = readfile("autoparry_animations_data.txt")
+    if not content then return end
+    local success, result = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(content)
+    end)
+    if success and result then
+        autoparryAnimations = result
+        local count = 0
+        for _ in pairs(autoparryAnimations) do
+            count = count + 1
+        end
+        if count > 0 then
+            Rayfield:Notify({
+                Title = "Loaded",
+                Content = "Loaded " .. count .. " autoparry animation" .. (count == 1 and "" or "s"),
+                Duration = 3,
+                Image = "check-circle",
+            })
+        end
+    end
+end
+
 -- Fetch global animations from npoint.io (supports executor request fallbacks)
 local function fetchGlobalAnimations()
     local function decode(jsonText)
@@ -1006,46 +1044,6 @@ local function submitLearnedAnimation(animId, animData, isUpdate)
             warn("[GLOBAL DB] Submit failed: " .. tostring(err))
         end
     end)
-end
-
--- Load autoparry animations from disk
-local function loadAutoparryFromFile()
-    if not isfile or not isfile("autoparry_animations_data.txt") then 
-        return 
-    end
-    
-    local content = readfile("autoparry_animations_data.txt")
-    if not content then return end
-    
-    local success, result = pcall(function()
-        return game:GetService("HttpService"):JSONDecode(content)
-    end)
-    
-    if success and result then
-        autoparryAnimations = result
-        
-        local count = 0
-        for _ in pairs(autoparryAnimations) do
-            count = count + 1
-        end
-        
-        if count > 0 then
-            Rayfield:Notify({
-                Title = "Loaded",
-                Content = "Loaded " .. count .. " autoparry animation" .. (count == 1 and "" or "s"),
-                Duration = 3,
-                Image = "check-circle",
-            })
-        end
-    end
-end
-
--- Save as JSON for better compatibility
-local function saveAutoparryAsJSON()
-    if not writefile or not game:GetService("HttpService") then return end
-    
-    local json = game:GetService("HttpService"):JSONEncode(autoparryAnimations)
-    writefile("autoparry_animations_data.txt", json)
 end
 
 -- Virtual Input Service
